@@ -1,0 +1,78 @@
+# Binaries for programs and plugins
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+main
+bin/
+*.test
+
+# Test binary, built with `go test -c`
+*.test
+
+# Output of the go coverage tool
+*.out
+*.prof
+
+# Go workspace file
+go.work
+
+# Database files
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+*.wal
+
+# Temporary files
+*.tmp
+*.tmp.*
+*.swp
+*.swo
+*~
+
+# OS files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# IDE files
+.vscode/
+.idea/
+*.iml
+*.swp
+*.swo
+
+# Test files
+test_*.go
+*_test_output.txt
+
+# Data files from examples
+example.db
+demo.db
+benchmark.db
+mydb.db
+myapp.db
+test.db
+godb.db
+
+# JSON and text outputs
+*.json
+*.txt
+output/
+
+# Build artifacts
+dist/
+build/
+
+# Logs
+*.log
+
+# Coverage
+coverage.html
+coverage.txt
