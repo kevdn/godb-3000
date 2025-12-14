@@ -79,8 +79,13 @@ func LoadBTree(pager *storage.Pager, rootID storage.PageID) (*BTree, error) {
 		if node.IsLeaf() {
 			break
 		}
+		// Get leftmost child to traverse down
+		childID := node.GetChild(0)
+		if !childID.IsValid() {
+			return nil, fmt.Errorf("corrupted internal node at page %d: missing leftmost child", currentID)
+		}
 		depth++
-		currentID = node.GetChild(0)
+		currentID = childID
 	}
 
 	return &BTree{
@@ -130,7 +135,12 @@ func (bt *BTree) Get(key []byte) ([]byte, bool, error) {
 		}
 
 		// Internal node: find child to descend into
-		idx := bt.searchNode(node, key)
+		// In B+trees, the separator key is the first key of the right child
+		// If search_key >= separator, go right; otherwise go left
+		idx := 0
+		for idx < node.NumKeys() && bytes.Compare(key, node.GetKey(idx)) >= 0 {
+			idx++
+		}
 		currentID = node.GetChild(idx)
 	}
 }
@@ -259,10 +269,16 @@ func (bt *BTree) insertNonFull(nodeID storage.PageID, node *Node, key, value []b
 		return nil, nil
 	}
 
-	// Child split: insert promoted key into this node
-	if err := node.InsertAt(idx, childSplit.key, childSplit.rightID); err != nil {
-		return nil, err
-	}
+	// Child split: we need to:
+	// 1. Keep the existing child pointer (it's now the left half after split)
+	// 2. Insert the promoted key at position idx
+	// 3. Insert the right child pointer after the promoted key
+	// The existing child at position idx stays as-is (it's already the left half)
+	// We just need to insert the key and add the right child
+
+	// Insert key at idx, and right child at idx+1
+	node.keys = append(node.keys[:idx], append([][]byte{childSplit.key}, node.keys[idx:]...)...)
+	node.children = append(node.children[:idx+1], append([]storage.PageID{childSplit.rightID}, node.children[idx+1:]...)...)
 
 	// Check if this node needs splitting
 	if node.IsFull() {
@@ -347,9 +363,13 @@ func (bt *BTree) Delete(key []byte) (bool, error) {
 
 	// If root is internal and has only one child, make that child the new root
 	if root.IsInternal() && root.NumKeys() == 0 {
+		oldRootID := bt.rootID
 		bt.rootID = root.GetChild(0)
 		bt.depth--
-		// Could free the old root page here
+		// Free the old root page
+		if err := bt.pager.FreePage(oldRootID); err != nil {
+			return false, fmt.Errorf("failed to free old root page: %w", err)
+		}
 	}
 
 	return true, nil

@@ -2,14 +2,13 @@ package storage
 
 import (
 	"encoding/binary"
-	"errors"
 	"fmt"
 )
 
 // Page size is typically 4KB or 8KB. We use 4KB as it's a common OS page size.
 const (
 	PageSize     = 4096
-	PageHeader   = 4 // Header: 2 bytes type + 2 bytes 
+	PageHeader   = 4 // Header: 2 bytes type + 2 bytes
 	MaxKeySize   = 1024
 	MaxValueSize = 3000
 )
@@ -17,15 +16,7 @@ const (
 // Page types
 const (
 	PageTypeNode = 1 // B-tree node page
-	PageTypeFree = 2 // Free page (in free list)
 	PageTypeMeta = 3 // Metadata page
-	PageTypeData = 4 // Data page (for large values)
-)
-
-var (
-	ErrPageTooSmall = errors.New("page size too small")
-	ErrInvalidPage  = errors.New("invalid page data")
-	ErrPageFull     = errors.New("page is full")
 )
 
 // Page represents a disk page, the fundamental unit of storage.
@@ -122,7 +113,6 @@ func (pc *PageCache) Put(pid PageID, page *Page) bool {
 	}
 
 	// Simple eviction: if full, clear the entire cache
-	// Production systems use LRU or similar algorithms
 	if pc.size >= pc.max {
 		pc.Clear()
 	}
@@ -241,10 +231,4 @@ func (pm *PageManager) Unmarshal(data []byte) error {
 	}
 
 	return nil
-}
-
-// Reset resets the page manager to initial state.
-func (pm *PageManager) Reset(startPage PageID) {
-	pm.nextPage = startPage
-	pm.freeList = pm.freeList[:0]
 }

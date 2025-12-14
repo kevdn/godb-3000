@@ -24,6 +24,7 @@ type Pager struct {
 	numPages   PageID
 	cache      *PageCache
 	dirtyPages map[PageID]*Page // Pages modified but not yet fsynced
+	pageMgr    *PageManager     // Page allocation manager (set after metadata load)
 	mu         sync.RWMutex
 }
 
@@ -208,19 +209,66 @@ func (p *Pager) writePage(pid PageID, page *Page) error {
 	return nil
 }
 
+// SetPageManager sets the page manager for allocation/deallocation.
+// This should be called after loading metadata from the KV layer.
+func (p *Pager) SetPageManager(pm *PageManager) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.pageMgr = pm
+}
+
 // AllocatePage allocates a new page and returns its ID.
+// Uses PageManager to reuse freed pages from the free list.
+// PageManager must be set via SetPageManager() before calling this method.
 func (p *Pager) AllocatePage() (PageID, error) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
-	pid := p.numPages
-	p.numPages++
+	if p.pageMgr == nil {
+		return InvalidPageID, fmt.Errorf("PageManager not set - call SetPageManager() first")
+	}
+
+	pid := p.pageMgr.Allocate()
+
+	// Ensure numPages tracks the highest allocated page
+	if pid >= p.numPages {
+		p.numPages = pid + 1
+	}
 
 	// Initialize with empty page
 	page := NewPage(PageTypeNode)
 	p.dirtyPages[pid] = page
 
 	return pid, nil
+}
+
+// FreePage marks a page as free for reuse.
+// The page is added to the free list managed by PageManager.
+// PageManager must be set via SetPageManager() before calling this method.
+func (p *Pager) FreePage(pid PageID) error {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	if p.pageMgr == nil {
+		return fmt.Errorf("PageManager not set - call SetPageManager() first")
+	}
+
+	if !pid.IsValid() {
+		return fmt.Errorf("invalid page ID")
+	}
+
+	if pid >= p.numPages {
+		return fmt.Errorf("cannot free page %d: out of range (total pages: %d)", pid, p.numPages)
+	}
+
+	// Add to free list via PageManager
+	p.pageMgr.Free(pid)
+
+	// Remove from cache and dirty pages
+	p.cache.Remove(pid)
+	delete(p.dirtyPages, pid)
+
+	return nil
 }
 
 // Flush writes all dirty pages to disk and calls fsync.

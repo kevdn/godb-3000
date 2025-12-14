@@ -241,7 +241,7 @@ func (n *Node) Serialize() (*storage.Page, error) {
 		for i := 0; i < len(n.keys); i++ {
 			// Write key
 			keyLen := len(n.keys[i])
-			if offset+2+keyLen > len(payload)-8 {
+			if offset+2+keyLen > len(payload)-8 { // reserve 8 bytes for next pointer
 				return nil, fmt.Errorf("node too large to fit in page")
 			}
 			binary.LittleEndian.PutUint16(payload[offset:offset+2], uint16(keyLen))
@@ -260,7 +260,7 @@ func (n *Node) Serialize() (*storage.Page, error) {
 			offset += valLen
 		}
 
-		// Write next pointer at the end of the page
+		// Write next pointer at the end of the page, 8 bytes for PageId
 		binary.LittleEndian.PutUint64(payload[len(payload)-8:], uint64(n.next))
 
 	} else {
@@ -294,6 +294,11 @@ func (n *Node) Serialize() (*storage.Page, error) {
 
 // Deserialize reads a node from a page.
 func Deserialize(page *storage.Page) (*Node, error) {
+	// Validate page type
+	if page.Type() != storage.PageTypeNode {
+		return nil, fmt.Errorf("corrupted page: expected type %d (PageTypeNode), got %d", storage.PageTypeNode, page.Type())
+	}
+
 	payload := page.Payload()
 
 	// Read header
