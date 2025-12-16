@@ -31,7 +31,7 @@ type TxnID uint64
 // Record represents a single WAL record.
 // Layout:
 //
-//	[CRC32: 4 bytes]
+//	[CRC32: 4 bytes],
 //	[LSN: 8 bytes]
 //	[TxnID: 8 bytes]
 //	[RecordType: 1 byte]
@@ -111,12 +111,11 @@ func (r *Record) Marshal() []byte {
 	return buf
 }
 
-// Unmarshal deserializes a WAL record from bytes.
+// UnmarshalRecord deserializes a WAL record from bytes.
 // Returns the record and the number of bytes consumed.
-// Supports both old format (no OldValue) and new format (with OldValue) for backward compatibility.
 func UnmarshalRecord(data []byte) (*Record, int, error) {
-	if len(data) < 4+8+8+1+4+4 {
-		return nil, 0, fmt.Errorf("insufficient data for record header")
+	if len(data) < RecordHeaderSize {
+		return nil, 0, fmt.Errorf("insufficient data for record header: got %d bytes, need at least %d", len(data), RecordHeaderSize)
 	}
 
 	offset := 0
@@ -145,26 +144,12 @@ func UnmarshalRecord(data []byte) (*Record, int, error) {
 	valueLen := binary.LittleEndian.Uint32(data[offset:])
 	offset += 4
 
-	// Check if this is old format (no OldValueLen) or new format (with OldValueLen)
-	var oldValueLen uint32
-	oldFormat := false
-	if len(data) < offset+4 {
-		// Old format - no OldValueLen field
-		oldFormat = true
-		oldValueLen = 0
-	} else {
-		// New format - read OldValueLen
-		oldValueLen = binary.LittleEndian.Uint32(data[offset:])
-		offset += 4
-	}
+	// Read OldValueLen
+	oldValueLen := binary.LittleEndian.Uint32(data[offset:])
+	offset += 4
 
 	// Calculate total record size
-	var totalLen int
-	if oldFormat {
-		totalLen = 4 + 8 + 8 + 1 + 4 + 4 + int(keyLen) + int(valueLen) // Old format
-	} else {
-		totalLen = RecordHeaderSize + int(keyLen) + int(valueLen) + int(oldValueLen) // New format
-	}
+	totalLen := RecordHeaderSize + int(keyLen) + int(valueLen) + int(oldValueLen)
 
 	if len(data) < totalLen {
 		return nil, 0, fmt.Errorf("insufficient data for record body: got %d bytes, need %d", len(data), totalLen)
@@ -186,12 +171,10 @@ func UnmarshalRecord(data []byte) (*Record, int, error) {
 	copy(value, data[offset:offset+int(valueLen)])
 	offset += int(valueLen)
 
-	// Read OldValue (if new format)
+	// Read OldValue
 	var oldValue []byte
-	if !oldFormat {
-		oldValue = make([]byte, oldValueLen)
-		copy(oldValue, data[offset:offset+int(oldValueLen)])
-	}
+	oldValue = make([]byte, oldValueLen)
+	copy(oldValue, data[offset:offset+int(oldValueLen)])
 
 	record := &Record{
 		LSN:        lsn,
