@@ -356,9 +356,8 @@ func (w *WAL) Recover() (redo []*Record, undo []*Record, err error) {
 		// Parse records
 		pos := 0
 		for pos < len(data) {
-			// Check minimum header size (old format: 29 bytes, new format: 33 bytes)
-			minHeaderSize := 4 + 8 + 8 + 1 + 4 + 4 // 29 bytes (old format minimum)
-			if len(data)-pos < minHeaderSize {
+			// Check minimum header size - must match RecordHeaderSize (33 bytes)
+			if len(data)-pos < RecordHeaderSize {
 				// Save remainder for next iteration
 				remainder = append(remainder, data[pos:]...)
 				break
