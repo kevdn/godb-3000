@@ -141,6 +141,22 @@ func (t *Table) Update(pkValue interface{}, row *Row) error {
 		return fmt.Errorf("validation failed: %w", err)
 	}
 
+	// Get primary key value from row
+	pkIndex, err := t.schema.GetColumnIndex(t.schema.PrimaryKey)
+	if err != nil {
+		return err
+	}
+
+	rowPKValue := row.Values[pkIndex]
+	if rowPKValue == nil {
+		return fmt.Errorf("primary key cannot be NULL")
+	}
+
+	// Verify that the row's primary key matches the pkValue parameter
+	if !valuesEqual(pkValue, rowPKValue) {
+		return fmt.Errorf("primary key mismatch: row contains %v but update key is %v", rowPKValue, pkValue)
+	}
+
 	// Generate row key
 	rowKey, err := t.makeRowKey(pkValue)
 	if err != nil {
@@ -263,6 +279,42 @@ func (t *Table) Count() (int, error) {
 		return true
 	})
 	return count, err
+}
+
+// valuesEqual compares two primary key values for equality.
+// Supports int64, string, and []byte types.
+func valuesEqual(v1, v2 interface{}) bool {
+	if v1 == nil && v2 == nil {
+		return true
+	}
+	if v1 == nil || v2 == nil {
+		return false
+	}
+
+	switch val1 := v1.(type) {
+	case int64:
+		val2, ok := v2.(int64)
+		return ok && val1 == val2
+	case string:
+		val2, ok := v2.(string)
+		return ok && val1 == val2
+	case []byte:
+		val2, ok := v2.([]byte)
+		if !ok {
+			return false
+		}
+		if len(val1) != len(val2) {
+			return false
+		}
+		for i := range val1 {
+			if val1[i] != val2[i] {
+				return false
+			}
+		}
+		return true
+	default:
+		return false
+	}
 }
 
 // makeRowKey generates a key for storing a row based on its primary key value.
