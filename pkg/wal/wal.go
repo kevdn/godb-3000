@@ -95,7 +95,7 @@ func (w *WAL) scanForNextLSN() error {
 
 	// Read all records
 	buf := make([]byte, 64*1024) // 64KB buffer
-	offset := int64(0)
+	remainder := make([]byte, 0)
 
 	for {
 		n, err := w.file.Read(buf)
@@ -106,17 +106,25 @@ func (w *WAL) scanForNextLSN() error {
 			return fmt.Errorf("failed to read WAL: %w", err)
 		}
 
+		// Prepend any remainder from previous iteration
+		data := append(remainder, buf[:n]...)
+		remainder = remainder[:0]
+
 		// Parse records from buffer
 		pos := 0
-		for pos < n {
-			if n-pos < RecordHeaderSize {
-				// Not enough data for a full record header
+		for pos < len(data) {
+			// Check minimum header size - must match RecordHeaderSize (33 bytes)
+			if len(data)-pos < RecordHeaderSize {
+				// Save remainder for next iteration
+				remainder = append(remainder, data[pos:]...)
 				break
 			}
 
-			record, size, err := UnmarshalRecord(buf[pos:n])
+			record, size, err := UnmarshalRecord(data[pos:])
 			if err != nil {
-				// Could be a partial record at the end, just stop
+				// Could be corruption or partial record
+				// Save remainder for next iteration
+				remainder = append(remainder, data[pos:]...)
 				break
 			}
 
@@ -128,19 +136,7 @@ func (w *WAL) scanForNextLSN() error {
 			}
 
 			pos += size
-			offset += int64(size)
 		}
-
-		// If we processed all bytes, continue reading
-		if pos >= n {
-			continue
-		}
-
-		// Partial record: seek to the position where we stopped
-		if _, err := w.file.Seek(offset+int64(pos), io.SeekStart); err != nil {
-			return err
-		}
-		break
 	}
 
 	// Set next LSN and TxnID
@@ -309,6 +305,7 @@ func (w *WAL) Checkpoint() error {
 // Returns:
 //   - Committed operations that need to be redone
 //   - Uncommitted operations that need to be undone
+//
 // Recovery starts from the last checkpoint LSN if available, otherwise from beginning.
 func (w *WAL) Recover() (redo []*Record, undo []*Record, err error) {
 	w.mu.Lock()

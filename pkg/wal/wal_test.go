@@ -372,7 +372,6 @@ func TestWALRecoverToCallback(t *testing.T) {
 			return nil
 		},
 	)
-
 	if err != nil {
 		t.Fatalf("RecoverToCallback failed: %v", err)
 	}
@@ -515,5 +514,160 @@ func TestWALEmptyFile(t *testing.T) {
 	stats, _ := wal.Stats()
 	if stats.NextLSN != 1 {
 		t.Errorf("Expected NextLSN 1 for empty file, got %d", stats.NextLSN)
+	}
+}
+
+// TestScanForNextLSN_BufferBoundary tests if scanForNextLSN correctly handles
+// records that span buffer boundaries during scanning
+func TestScanForNextLSN_BufferBoundary(t *testing.T) {
+	tmpDir := t.TempDir()
+	walPath := filepath.Join(tmpDir, "boundary.wal")
+
+	// First, create a WAL and write records with known sizes
+	wal1, err := Open(walPath, DefaultOptions())
+	if err != nil {
+		t.Fatalf("Failed to open WAL: %v", err)
+	}
+
+	// Write multiple records with large values to ensure we cross buffer boundaries
+	// Each record will be written atomically, but scanning reads in chunks
+
+	txn1 := wal1.BeginTxn()
+	// Write a small record (LSN=1)
+	_, err = wal1.LogInsert(txn1, []byte("key1"), []byte("value1"), nil)
+	if err != nil {
+		t.Fatalf("Failed to log insert 1: %v", err)
+	}
+	wal1.CommitTxn(txn1) // LSN=2
+
+	txn2 := wal1.BeginTxn()
+	// Write a large record that could span 64KB boundary (LSN=3)
+	// Create a 70KB value to ensure it spans buffer boundaries
+	largeValue := make([]byte, 70*1024) // 70KB
+	for i := range largeValue {
+		largeValue[i] = byte(i % 256)
+	}
+	_, err = wal1.LogInsert(txn2, []byte("key2"), largeValue, nil)
+	if err != nil {
+		t.Fatalf("Failed to log large insert: %v", err)
+	}
+	wal1.CommitTxn(txn2) // LSN=4
+
+	txn3 := wal1.BeginTxn()
+	// Write another record after the large one (LSN=5)
+	_, err = wal1.LogInsert(txn3, []byte("key3"), []byte("value3"), nil)
+	if err != nil {
+		t.Fatalf("Failed to log insert 3: %v", err)
+	}
+	wal1.CommitTxn(txn3) // LSN=6
+
+	// Get stats before closing
+	stats1, err := wal1.Stats()
+	if err != nil {
+		t.Fatalf("Failed to get stats: %v", err)
+	}
+	t.Logf("Before close - NextLSN: %d, NextTxnID: %d", stats1.NextLSN, stats1.NextTxnID)
+
+	wal1.Close()
+
+	// Now reopen and let scanForNextLSN do its work
+	// This will test if it can correctly scan through records that span buffer boundaries
+	wal2, err := Open(walPath, DefaultOptions())
+	if err != nil {
+		t.Fatalf("Failed to reopen WAL: %v", err)
+	}
+	defer wal2.Close()
+
+	stats2, err := wal2.Stats()
+	if err != nil {
+		t.Fatalf("Failed to get stats after reopen: %v", err)
+	}
+	t.Logf("After reopen - NextLSN: %d, NextTxnID: %d", stats2.NextLSN, stats2.NextTxnID)
+
+	// The critical test: did we scan ALL records, including the ones after the large record?
+	// We should have scanned LSN 1-6
+	expectedNextLSN := LSN(7) // NextLSN should be 7 (last LSN was 6)
+
+	if stats2.NextLSN != expectedNextLSN {
+		t.Errorf("BUFFER BOUNDARY BUG DETECTED! Expected NextLSN=%d, got %d", expectedNextLSN, stats2.NextLSN)
+		t.Errorf("This indicates scanForNextLSN stopped scanning when it encountered a record spanning buffer boundaries")
+	}
+
+	// Verify we can recover all records
+	redo, undo, err := wal2.Recover()
+	if err != nil {
+		t.Fatalf("Failed to recover: %v", err)
+	}
+
+	t.Logf("Recovered %d redo records, %d undo records", len(redo), len(undo))
+
+	// We should have 3 insert records in redo (all committed)
+	if len(redo) != 3 {
+		t.Errorf("Expected 3 redo records (3 inserts), got %d", len(redo))
+		t.Errorf("Missing records indicate scanForNextLSN didn't scan everything")
+	}
+
+	// Verify all keys are present
+	foundKeys := make(map[string]bool)
+	for _, r := range redo {
+		foundKeys[string(r.Key)] = true
+		t.Logf("Recovered record: LSN=%d, Key=%s, ValueLen=%d", r.LSN, r.Key, len(r.Value))
+	}
+
+	if !foundKeys["key1"] {
+		t.Error("Missing key1 in recovery")
+	}
+	if !foundKeys["key2"] {
+		t.Error("Missing key2 (large record) in recovery - buffer boundary issue!")
+	}
+	if !foundKeys["key3"] {
+		t.Error("Missing key3 (after large record) in recovery - buffer boundary issue!")
+	}
+}
+
+// TestScanForNextLSN_SmallBuffer tests scanning with artificially small buffer
+// This is a more controlled test to verify the exact behavior
+func TestScanForNextLSN_SmallBuffer(t *testing.T) {
+	tmpDir := t.TempDir()
+	walPath := filepath.Join(tmpDir, "small_buffer.wal")
+
+	// Create WAL and write records
+	wal1, err := Open(walPath, DefaultOptions())
+	if err != nil {
+		t.Fatalf("Failed to open WAL: %v", err)
+	}
+
+	// Write 3 small records
+	for i := 1; i <= 3; i++ {
+		txn := wal1.BeginTxn()
+		key := []byte("key" + string(rune('0'+i)))
+		value := []byte("value" + string(rune('0'+i)))
+		_, err = wal1.LogInsert(txn, key, value, nil)
+		if err != nil {
+			t.Fatalf("Failed to log insert %d: %v", i, err)
+		}
+		wal1.CommitTxn(txn)
+	}
+
+	stats1, _ := wal1.Stats()
+	expectedNextLSN := stats1.NextLSN
+	expectedNextTxnID := stats1.NextTxnID
+
+	wal1.Close()
+
+	// Reopen and verify scanning found all records
+	wal2, err := Open(walPath, DefaultOptions())
+	if err != nil {
+		t.Fatalf("Failed to reopen WAL: %v", err)
+	}
+	defer wal2.Close()
+
+	stats2, _ := wal2.Stats()
+
+	if stats2.NextLSN != expectedNextLSN {
+		t.Errorf("NextLSN mismatch after scan: expected %d, got %d", expectedNextLSN, stats2.NextLSN)
+	}
+	if stats2.NextTxnID != expectedNextTxnID {
+		t.Errorf("NextTxnID mismatch after scan: expected %d, got %d", expectedNextTxnID, stats2.NextTxnID)
 	}
 }
