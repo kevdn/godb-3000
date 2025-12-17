@@ -111,7 +111,7 @@ func (w *WAL) scanForNextLSN() error {
 			return fmt.Errorf("failed to read WAL: %w", err)
 		}
 
-		// Prepend any remainder from previous iteration	
+		// Prepend any remainder from previous iteration
 		data := append(remainder, buf[:n]...)
 		remainder = remainder[:0]
 
@@ -338,8 +338,7 @@ func (w *WAL) Recover() (redo []*Record, undo []*Record, err error) {
 	defer w.mu.Unlock()
 
 	// Start from last checkpoint if available, otherwise from beginning
-	startLSN := w.lastCheckpointLSN
-	if startLSN == 0 || w.lastCheckpointOffset == 0 {
+	if w.lastCheckpointOffset == 0 {
 		// No checkpoint, start from beginning
 		if _, err := w.file.Seek(0, io.SeekStart); err != nil {
 			return nil, nil, err
@@ -355,8 +354,6 @@ func (w *WAL) Recover() (redo []*Record, undo []*Record, err error) {
 	committedTxns := make(map[TxnID]bool)
 	abortedTxns := make(map[TxnID]bool)
 	allRecords := make([]*Record, 0)
-	// If no checkpoint or we seeked to checkpoint offset, process all records from current position
-	checkpointFound := startLSN == 0 || w.lastCheckpointOffset > 0
 
 	// Read all records
 	buf := make([]byte, 64*1024) // 64KB buffer
@@ -391,16 +388,6 @@ func (w *WAL) Recover() (redo []*Record, undo []*Record, err error) {
 				// In production, you'd want more sophisticated handling
 				remainder = append(remainder, data[pos:]...)
 				break
-			}
-
-			// Skip records before checkpoint (only if we're scanning from beginning)
-			if !checkpointFound {
-				if record.RecordType == RecordTypeCheckpoint && record.LSN >= startLSN {
-					checkpointFound = true
-				}
-				// Skip this record (before checkpoint)
-				pos += size
-				continue
 			}
 
 			// Skip the checkpoint record itself if we land on it
