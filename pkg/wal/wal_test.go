@@ -340,7 +340,7 @@ func TestWALRecovery(t *testing.T) {
 	}
 }
 
-func TestWALRecoverToCallback(t *testing.T) {
+func TestWALRecoverWithUncommitted(t *testing.T) {
 	tmpDir := t.TempDir()
 	walPath := filepath.Join(tmpDir, "test.wal")
 
@@ -355,35 +355,33 @@ func TestWALRecoverToCallback(t *testing.T) {
 	// Don't commit
 	wal1.Close()
 
-	// Recover with callbacks
+	// Recover
 	wal2, _ := Open(walPath, DefaultOptions())
 	defer wal2.Close()
 
-	applied := make(map[string][]byte)
-	deleted := make(map[string]bool)
-
-	err := wal2.RecoverToCallback(
-		func(key, value []byte) error {
-			applied[string(key)] = value
-			return nil
-		},
-		func(key []byte) error {
-			deleted[string(key)] = true
-			return nil
-		},
-	)
+	redo, undo, err := wal2.Recover()
 	if err != nil {
-		t.Fatalf("RecoverToCallback failed: %v", err)
+		t.Fatalf("Recover failed: %v", err)
 	}
 
-	// key1 should be applied (committed)
-	if val, ok := applied["key1"]; !ok || string(val) != "value1" {
-		t.Errorf("Expected key1=value1 in applied, got %v", applied)
+	// key1 should be in redo (committed)
+	if len(redo) != 1 {
+		t.Errorf("Expected 1 redo record, got %d", len(redo))
+	}
+	if len(redo) > 0 {
+		if string(redo[0].Key) != "key1" || string(redo[0].Value) != "value1" {
+			t.Errorf("Expected key1=value1 in redo, got %s=%s", redo[0].Key, redo[0].Value)
+		}
 	}
 
-	// key2 should be deleted (uncommitted insert)
-	if !deleted["key2"] {
-		t.Error("Expected key2 to be deleted (undo uncommitted insert)")
+	// key2 should be in undo (uncommitted insert)
+	if len(undo) != 1 {
+		t.Errorf("Expected 1 undo record, got %d", len(undo))
+	}
+	if len(undo) > 0 {
+		if string(undo[0].Key) != "key2" {
+			t.Errorf("Expected key2 in undo, got %s", undo[0].Key)
+		}
 	}
 }
 
