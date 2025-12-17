@@ -33,8 +33,9 @@ type WAL struct {
 	// Active transactions (TxnID -> first LSN)
 	activeTxns map[TxnID]LSN
 
-	// Track last checkpoint LSN
-	lastCheckpointLSN LSN
+	// Track last checkpoint LSN and file offset
+	lastCheckpointLSN    LSN
+	lastCheckpointOffset int64
 }
 
 // Options configures the WAL.
@@ -81,6 +82,7 @@ func Open(path string, opts Options) (*WAL, error) {
 }
 
 // scanForNextLSN scans the WAL file to determine the next LSN and TxnID.
+// Also tracks the last checkpoint LSN and offset for recovery optimization.
 func (w *WAL) scanForNextLSN() error {
 	w.mu.Lock()
 	defer w.mu.Unlock()
@@ -92,10 +94,13 @@ func (w *WAL) scanForNextLSN() error {
 
 	var maxLSN LSN = 0
 	var maxTxnID TxnID = 0
+	var lastCheckpointLSN LSN = 0
+	var lastCheckpointOffset int64 = 0
 
 	// Read all records
 	buf := make([]byte, 64*1024) // 64KB buffer
 	remainder := make([]byte, 0)
+	absoluteOffset := int64(0) // Track absolute position in file where current record starts
 
 	for {
 		n, err := w.file.Read(buf)
@@ -106,7 +111,7 @@ func (w *WAL) scanForNextLSN() error {
 			return fmt.Errorf("failed to read WAL: %w", err)
 		}
 
-		// Prepend any remainder from previous iteration
+		// Prepend any remainder from previous iteration	
 		data := append(remainder, buf[:n]...)
 		remainder = remainder[:0]
 
@@ -119,6 +124,9 @@ func (w *WAL) scanForNextLSN() error {
 				remainder = append(remainder, data[pos:]...)
 				break
 			}
+
+			// Record the offset of this record's start
+			recordOffset := absoluteOffset
 
 			record, size, err := UnmarshalRecord(data[pos:])
 			if err != nil {
@@ -135,13 +143,24 @@ func (w *WAL) scanForNextLSN() error {
 				maxTxnID = record.TxnID
 			}
 
+			// Track last checkpoint
+			if record.RecordType == RecordTypeCheckpoint {
+				lastCheckpointLSN = record.LSN
+				lastCheckpointOffset = recordOffset
+			}
+
 			pos += size
+			absoluteOffset += int64(size)
 		}
 	}
 
 	// Set next LSN and TxnID
 	w.nextLSN.Store(uint64(maxLSN + 1))
 	w.nextTxnID.Store(uint64(maxTxnID + 1))
+
+	// Set checkpoint information
+	w.lastCheckpointLSN = lastCheckpointLSN
+	w.lastCheckpointOffset = lastCheckpointOffset
 
 	// Seek to end for appending
 	if _, err := w.file.Seek(0, io.SeekEnd); err != nil {
@@ -273,6 +292,12 @@ func (w *WAL) Checkpoint() error {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 
+	// Get current file offset before writing checkpoint
+	currentOffset, err := w.file.Seek(0, io.SeekCurrent)
+	if err != nil {
+		return fmt.Errorf("failed to get current offset: %w", err)
+	}
+
 	// Get current LSN
 	currentLSN := LSN(w.nextLSN.Load())
 
@@ -297,6 +322,7 @@ func (w *WAL) Checkpoint() error {
 
 	w.nextLSN.Add(1)
 	w.lastCheckpointLSN = currentLSN
+	w.lastCheckpointOffset = currentOffset
 
 	return nil
 }
@@ -313,17 +339,15 @@ func (w *WAL) Recover() (redo []*Record, undo []*Record, err error) {
 
 	// Start from last checkpoint if available, otherwise from beginning
 	startLSN := w.lastCheckpointLSN
-	if startLSN == 0 {
+	if startLSN == 0 || w.lastCheckpointOffset == 0 {
 		// No checkpoint, start from beginning
 		if _, err := w.file.Seek(0, io.SeekStart); err != nil {
 			return nil, nil, err
 		}
 	} else {
-		// Start from checkpoint - need to find the checkpoint record
-		// For simplicity, we'll scan from beginning but skip records before checkpoint
-		// In production, you'd maintain an index of LSN -> file offset
-		if _, err := w.file.Seek(0, io.SeekStart); err != nil {
-			return nil, nil, err
+		// Seek directly to checkpoint offset - skip reading old records!
+		if _, err := w.file.Seek(w.lastCheckpointOffset, io.SeekStart); err != nil {
+			return nil, nil, fmt.Errorf("failed to seek to checkpoint: %w", err)
 		}
 	}
 
@@ -331,7 +355,8 @@ func (w *WAL) Recover() (redo []*Record, undo []*Record, err error) {
 	committedTxns := make(map[TxnID]bool)
 	abortedTxns := make(map[TxnID]bool)
 	allRecords := make([]*Record, 0)
-	checkpointFound := startLSN == 0 // If no checkpoint, process all records
+	// If no checkpoint or we seeked to checkpoint offset, process all records from current position
+	checkpointFound := startLSN == 0 || w.lastCheckpointOffset > 0
 
 	// Read all records
 	buf := make([]byte, 64*1024) // 64KB buffer
@@ -368,12 +393,18 @@ func (w *WAL) Recover() (redo []*Record, undo []*Record, err error) {
 				break
 			}
 
-			// Skip records before checkpoint
+			// Skip records before checkpoint (only if we're scanning from beginning)
 			if !checkpointFound {
 				if record.RecordType == RecordTypeCheckpoint && record.LSN >= startLSN {
 					checkpointFound = true
 				}
 				// Skip this record (before checkpoint)
+				pos += size
+				continue
+			}
+
+			// Skip the checkpoint record itself if we land on it
+			if record.RecordType == RecordTypeCheckpoint {
 				pos += size
 				continue
 			}
@@ -441,6 +472,8 @@ func (w *WAL) Truncate() error {
 	w.file = file
 	w.nextLSN.Store(1)
 	w.activeTxns = make(map[TxnID]LSN)
+	w.lastCheckpointLSN = 0
+	w.lastCheckpointOffset = 0
 
 	return nil
 }

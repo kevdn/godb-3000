@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 )
 
 // bytesEqual compares two byte slices, treating nil and empty slice as equal
@@ -667,5 +668,185 @@ func TestScanForNextLSN_SmallBuffer(t *testing.T) {
 	}
 	if stats2.NextTxnID != expectedNextTxnID {
 		t.Errorf("NextTxnID mismatch after scan: expected %d, got %d", expectedNextTxnID, stats2.NextTxnID)
+	}
+}
+
+// TestCheckpointSeeksDirectly verifies that checkpoint actually seeks to the offset
+// instead of reading from the beginning and skipping records
+func TestCheckpointSeeksDirectly(t *testing.T) {
+	tmpDir := t.TempDir()
+	walPath := filepath.Join(tmpDir, "checkpoint_seek.wal")
+
+	// Create WAL and write many records BEFORE checkpoint
+	wal1, err := Open(walPath, DefaultOptions())
+	if err != nil {
+		t.Fatalf("Failed to open WAL: %v", err)
+	}
+
+	// Write 100 records before checkpoint
+	for i := 1; i <= 100; i++ {
+		txn := wal1.BeginTxn()
+		key := []byte("old_key_" + string(rune('0'+i)))
+		value := []byte("old_value_" + string(rune('0'+i)))
+		_, err = wal1.LogInsert(txn, key, value, nil)
+		if err != nil {
+			t.Fatalf("Failed to log insert %d: %v", i, err)
+		}
+		wal1.CommitTxn(txn)
+	}
+
+	// Get file size before checkpoint
+	stats1, _ := wal1.Stats()
+	sizeBeforeCheckpoint := stats1.FileSize
+	t.Logf("File size before checkpoint: %d bytes", sizeBeforeCheckpoint)
+
+	// Create checkpoint - this should save the current offset
+	err = wal1.Checkpoint()
+	if err != nil {
+		t.Fatalf("Failed to create checkpoint: %v", err)
+	}
+
+	stats2, _ := wal1.Stats()
+	t.Logf("Checkpoint created at LSN=%d", stats2.LastCheckpointLSN)
+
+	// Write 10 records AFTER checkpoint
+	for i := 1; i <= 10; i++ {
+		txn := wal1.BeginTxn()
+		key := []byte("new_key_" + string(rune('0'+i)))
+		value := []byte("new_value_" + string(rune('0'+i)))
+		_, err = wal1.LogInsert(txn, key, value, nil)
+		if err != nil {
+			t.Fatalf("Failed to log insert after checkpoint %d: %v", i, err)
+		}
+		wal1.CommitTxn(txn)
+	}
+
+	stats3, _ := wal1.Stats()
+	t.Logf("File size after adding new records: %d bytes", stats3.FileSize)
+
+	wal1.Close()
+
+	// Now reopen and recover
+	wal2, err := Open(walPath, DefaultOptions())
+	if err != nil {
+		t.Fatalf("Failed to reopen WAL: %v", err)
+	}
+	defer wal2.Close()
+
+	// Verify checkpoint offset was loaded
+	if wal2.lastCheckpointOffset == 0 {
+		t.Error("lastCheckpointOffset is 0 - checkpoint offset not saved!")
+	}
+	t.Logf("Checkpoint offset loaded: %d", wal2.lastCheckpointOffset)
+
+	// Recovery should only process records AFTER checkpoint
+	redo, undo, err := wal2.Recover()
+	if err != nil {
+		t.Fatalf("Failed to recover: %v", err)
+	}
+
+	t.Logf("Recovered %d redo records, %d undo records", len(redo), len(undo))
+
+	// We should only see the 10 records written AFTER checkpoint
+	// The 100 records before checkpoint should be skipped
+	expectedRedoCount := 10
+	if len(redo) != expectedRedoCount {
+		t.Errorf("Expected %d redo records (after checkpoint), got %d", expectedRedoCount, len(redo))
+		t.Errorf("This suggests recovery is reading from beginning instead of seeking to checkpoint!")
+	}
+
+	// Verify the redo records are the NEW ones, not the old ones
+	foundOldKey := false
+	foundNewKey := false
+	for _, record := range redo {
+		keyStr := string(record.Key)
+		if len(keyStr) >= 7 {
+			if keyStr[:7] == "old_key" {
+				foundOldKey = true
+			}
+			if keyStr[:7] == "new_key" {
+				foundNewKey = true
+			}
+		}
+	}
+
+	if foundOldKey {
+		t.Error("Found old_key in redo list - checkpoint seek is NOT working!")
+	}
+	if !foundNewKey {
+		t.Error("Did not find new_key in redo list - something is wrong!")
+	}
+}
+
+// TestCheckpointPerformance verifies checkpoint actually improves recovery performance
+func TestCheckpointPerformance(t *testing.T) {
+	tmpDir := t.TempDir()
+	walPath := filepath.Join(tmpDir, "perf.wal")
+
+	// Create WAL with many records
+	wal1, _ := Open(walPath, DefaultOptions())
+
+	// Write 1000 records before checkpoint
+	t.Log("Writing 1000 records before checkpoint...")
+	for i := 1; i <= 1000; i++ {
+		txn := wal1.BeginTxn()
+		key := []byte("key_before_" + string(rune(i)))
+		value := make([]byte, 100) // 100 bytes each
+		for j := range value {
+			value[j] = byte(i % 256)
+		}
+		wal1.LogInsert(txn, key, value, nil)
+		wal1.CommitTxn(txn)
+	}
+
+	// Checkpoint
+	wal1.Checkpoint()
+	stats1, _ := wal1.Stats()
+	checkpointOffset := wal1.lastCheckpointOffset
+	t.Logf("Checkpoint at offset %d (file size: %d)", checkpointOffset, stats1.FileSize)
+	t.Logf("Checkpoint LSN: %d", wal1.lastCheckpointLSN)
+
+	// Write 100 records after checkpoint
+	t.Log("Writing 100 records after checkpoint...")
+	for i := 1; i <= 100; i++ {
+		txn := wal1.BeginTxn()
+		key := []byte("key_after_" + string(rune(i)))
+		value := make([]byte, 100)
+		for j := range value {
+			value[j] = byte(i % 256)
+		}
+		wal1.LogInsert(txn, key, value, nil)
+		wal1.CommitTxn(txn)
+	}
+
+	stats2, _ := wal1.Stats()
+	t.Logf("Final file size: %d, NextLSN: %d", stats2.FileSize, stats2.NextLSN)
+
+	wal1.Close()
+
+	// Measure recovery time WITH checkpoint
+	wal2, _ := Open(walPath, DefaultOptions())
+	defer wal2.Close()
+
+	t.Logf("After reopen - checkpoint offset: %d, checkpoint LSN: %d", wal2.lastCheckpointOffset, wal2.lastCheckpointLSN)
+
+	start := time.Now()
+	redo, _, err := wal2.Recover()
+	elapsed := time.Since(start)
+
+	if err != nil {
+		t.Fatalf("Recovery failed: %v", err)
+	}
+
+	t.Logf("Recovery took: %v", elapsed)
+	t.Logf("Recovered %d redo records (should be ~100, not ~1100)", len(redo))
+
+	// Should recover only ~100 records (after checkpoint), not ~1100 (all records)
+	if len(redo) > 200 {
+		t.Errorf("Recovered %d records - too many! Checkpoint seek is not working", len(redo))
+	}
+
+	if len(redo) < 50 {
+		t.Errorf("Recovered %d records - too few! Something is wrong", len(redo))
 	}
 }
