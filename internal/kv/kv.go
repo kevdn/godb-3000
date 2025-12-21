@@ -194,7 +194,7 @@ func (kv *KV) initializeNew() error {
 		Magic:      [8]byte{'G', 'O', 'D', 'B', '3', '0', '0', '0'},
 		Version:    1,
 		RootPageID: 1,                         // Root will be page 1
-		PageMgr:    storage.NewPageManager(2), // Start allocating from page 2
+		PageMgr:    storage.NewPageManager(1), // Start allocating from page 1 (page 0 is metadata)
 	}
 
 	// Set PageManager in pager BEFORE creating BTree
