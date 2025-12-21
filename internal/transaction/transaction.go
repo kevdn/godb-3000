@@ -5,9 +5,9 @@ import (
 	"sync"
 	"time"
 
-	"github.com/khoale/godb-3000/pkg/index"
-	"github.com/khoale/godb-3000/pkg/kv"
-	"github.com/khoale/godb-3000/pkg/table"
+	"github.com/khoale/godb-3000/internal/index"
+	"github.com/khoale/godb-3000/internal/kv"
+	"github.com/khoale/godb-3000/internal/table"
 )
 
 // IsolationLevel defines the transaction isolation level.

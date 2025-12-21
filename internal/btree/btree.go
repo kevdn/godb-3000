@@ -4,7 +4,7 @@ import (
 	"bytes"
 	"fmt"
 
-	"github.com/khoale/godb-3000/pkg/storage"
+	"github.com/khoale/godb-3000/internal/storage"
 )
 
 // BTree represents a B+tree index stored on disk.

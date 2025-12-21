@@ -5,9 +5,9 @@ import (
 	"fmt"
 	"sync"
 
-	"github.com/khoale/godb-3000/pkg/btree"
-	"github.com/khoale/godb-3000/pkg/storage"
-	"github.com/khoale/godb-3000/pkg/wal"
+	"github.com/khoale/godb-3000/internal/btree"
+	"github.com/khoale/godb-3000/internal/storage"
+	"github.com/khoale/godb-3000/internal/wal"
 )
 
 // KV represents a key-value store built on top of a B+tree.

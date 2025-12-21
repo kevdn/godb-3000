@@ -6,7 +6,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/khoale/godb-3000/pkg/storage"
+	"github.com/khoale/godb-3000/internal/storage"
 )
 
 func setupTestBTree(t *testing.T) (*BTree, *storage.Pager, string) {

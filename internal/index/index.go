@@ -5,8 +5,8 @@ import (
 	"encoding/binary"
 	"fmt"
 
-	"github.com/khoale/godb-3000/pkg/kv"
-	"github.com/khoale/godb-3000/pkg/table"
+	"github.com/khoale/godb-3000/internal/kv"
+	"github.com/khoale/godb-3000/internal/table"
 )
 
 // Index represents a secondary index on a table column.

@@ -4,7 +4,7 @@ import (
 	"encoding/binary"
 	"fmt"
 
-	"github.com/khoale/godb-3000/pkg/kv"
+	"github.com/khoale/godb-3000/internal/kv"
 )
 
 // Table represents a relational table built on top of a KV store.

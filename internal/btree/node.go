@@ -4,7 +4,7 @@ import (
 	"encoding/binary"
 	"fmt"
 
-	"github.com/khoale/godb-3000/pkg/storage"
+	"github.com/khoale/godb-3000/internal/storage"
 )
 
 // Node represents a B+tree node stored on disk.
