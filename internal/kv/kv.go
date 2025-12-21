@@ -249,7 +249,7 @@ func (kv *KV) loadMetadata() error {
 	pmDataLen := binary.LittleEndian.Uint32(payload[20:24])
 	pmData := payload[24 : 24+pmDataLen]
 
-	pageMgr := storage.NewPageManager(2)
+	pageMgr := storage.NewPageManager(1)
 	if err := pageMgr.Unmarshal(pmData); err != nil {
 		return fmt.Errorf("failed to unmarshal page manager: %w", err)
 	}
