@@ -14,27 +14,38 @@ import (
 type IsolationLevel int
 
 const (
-	// ReadUncommitted allows dirty reads (not implemented - for reference)
+	// ReadUncommitted allows dirty reads (NOT IMPLEMENTED - for reference only)
 	ReadUncommitted IsolationLevel = iota
-	// ReadCommitted prevents dirty reads
+	// ReadCommitted prevents dirty reads, allows non-repeatable reads
+	// Implementation: No read tracking, no validation
 	ReadCommitted
-	// RepeatableRead prevents non-repeatable reads (default)
+	// RepeatableRead prevents non-repeatable reads using Optimistic Concurrency Control
+	// Implementation: Tracks reads, validates at commit time, aborts on conflicts
 	RepeatableRead
-	// Serializable provides full isolation (simplest to implement correctly)
+	// Serializable provides full isolation using global write lock
+	// Implementation: One transaction at a time, no conflicts possible
 	Serializable
 )
 
 // Transaction represents a database transaction.
 // Implements ACID properties:
-// - Atomicity: All operations succeed or all fail
-// - Consistency: Database remains in valid state
-// - Isolation: Concurrent transactions don't interfere
-// - Durability: Committed changes persist
+// - Atomicity: All operations succeed or all fail (via KV layer)
+// - Consistency: Database remains in valid state (via validation)
+// - Isolation: Multiple strategies based on isolation level
+// - Durability: Committed changes persist (via WAL)
 //
-// This implementation uses a simple lock-based approach:
-// - Write locks are exclusive (only one writer at a time)
-// - Transactions maintain a private workspace (copy-on-write)
-// - Commit is atomic through the KV store's transaction support
+// Isolation Implementation Strategy:
+// - ReadCommitted: No read tracking, allows non-repeatable reads
+// - RepeatableRead: Optimistic Concurrency Control (OCC)
+//   - Tracks all reads in readSet
+//   - No locks during execution
+//   - Validates at commit time
+//   - Aborts on conflicts
+//
+// - Serializable: Pessimistic with global write lock
+//   - Only one transaction executes at a time
+//   - No validation needed
+//   - Guarantees serializability but low concurrency
 type Transaction struct {
 	id           uint64
 	store        *kv.KV
@@ -170,23 +181,30 @@ func (tm *TxnManager) abort(txn *Transaction) error {
 }
 
 // validate checks for conflicts with other transactions.
+// Only applies to RepeatableRead (ReadCommitted doesn't track reads, Serializable uses lock).
 func (tm *TxnManager) validate(txn *Transaction) error {
 	// For serializable isolation, no validation needed (global lock prevents conflicts)
 	if txn.isolationLvl == Serializable {
 		return nil
 	}
 
+	// For read committed, no validation needed (doesn't track reads, allows non-repeatable reads)
+	if txn.isolationLvl == ReadCommitted {
+		return nil
+	}
+
 	tm.mu.RLock()
 	defer tm.mu.RUnlock()
 
-	// Check if any keys in read set were modified by other transactions
+	// For RepeatableRead: Check if any keys in read set were modified by other transactions
+	// This implements Optimistic Concurrency Control (OCC)
 	for key := range txn.readSet {
 		currentValue, _, err := txn.store.Get([]byte(key))
 		if err != nil {
 			return err
 		}
 
-		// If value changed, we have a conflict
+		// If value changed, we have a conflict (non-repeatable read detected)
 		originalValue := txn.readSet[key]
 		if !bytesEqual(currentValue, originalValue) {
 			return fmt.Errorf("read conflict on key: %s", key)
@@ -221,7 +239,8 @@ func (txn *Transaction) Get(key []byte) ([]byte, bool, error) {
 		return nil, false, err
 	}
 
-	// Track read for validation
+	// Track read for validation (only for RepeatableRead and Serializable)
+	// ReadCommitted doesn't track reads to allow non-repeatable reads
 	if txn.isolationLvl >= RepeatableRead {
 		txn.readSet[keyStr] = value
 	}
