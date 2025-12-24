@@ -23,6 +23,7 @@ type Index struct {
 	tableName  string
 	columnName string
 	columnType table.DataType
+	unique     bool // Whether this is a unique index
 	store      *kv.KV
 	prefix     string // Key prefix for this index's data
 }
@@ -56,6 +57,7 @@ func CreateIndex(tableName, columnName string, schema *table.Schema, store *kv.K
 		tableName:  tableName,
 		columnName: columnName,
 		columnType: col.Type,
+		unique:     unique,
 		store:      store,
 		prefix:     fmt.Sprintf("__idx__:%s:%s:", tableName, columnName),
 	}
@@ -96,6 +98,7 @@ func LoadIndex(tableName, columnName string, store *kv.KV) (*Index, error) {
 		tableName:  meta.TableName,
 		columnName: meta.ColumnName,
 		columnType: meta.ColumnType,
+		unique:     meta.Unique,
 		store:      store,
 		prefix:     fmt.Sprintf("__idx__:%s:%s:", tableName, columnName),
 	}, nil
@@ -114,19 +117,21 @@ func (idx *Index) Insert(columnValue, primaryKey interface{}) error {
 		return err
 	}
 
-	// Check for uniqueness constraint
-	exists, err := idx.Exists(columnValue)
-	if err != nil {
-		return err
-	}
-	if exists {
-		// Check if it's the same primary key
-		existingPK, err := idx.Lookup(columnValue)
+	// Check for uniqueness constraint (only if this is a unique index)
+	if idx.unique {
+		exists, err := idx.Exists(columnValue)
 		if err != nil {
 			return err
 		}
-		if len(existingPK) > 0 && !equalPrimaryKeys(existingPK[0], primaryKey) {
-			return fmt.Errorf("unique constraint violation: value already exists")
+		if exists {
+			// Check if it's the same primary key
+			existingPK, err := idx.Lookup(columnValue)
+			if err != nil {
+				return err
+			}
+			if len(existingPK) > 0 && !equalPrimaryKeys(existingPK[0], primaryKey) {
+				return fmt.Errorf("unique constraint violation: value already exists")
+			}
 		}
 	}
 
