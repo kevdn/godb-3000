@@ -36,12 +36,13 @@ func (dt DataType) String() string {
 
 // Column represents a table column definition.
 type Column struct {
-	Name       string
-	Type       DataType
-	PrimaryKey bool
-	NotNull    bool
-	Unique     bool
-	Index      bool // Whether this column has an index
+	Name          string
+	Type          DataType
+	PrimaryKey    bool
+	NotNull       bool
+	Unique        bool
+	Index         bool // Whether this column has an index
+	AutoIncrement bool // Whether this column is auto-incrementing (only for INT primary keys)
 }
 
 // Schema represents a table schema.
@@ -65,6 +66,22 @@ func (s *Schema) AddColumn(col *Column) error {
 	for _, existing := range s.Columns {
 		if existing.Name == col.Name {
 			return fmt.Errorf("column %s already exists", col.Name)
+		}
+	}
+
+	// Validate AutoIncrement constraints
+	if col.AutoIncrement {
+		if col.Type != TypeInt {
+			return fmt.Errorf("AUTO_INCREMENT is only supported on INT columns")
+		}
+		if !col.PrimaryKey {
+			return fmt.Errorf("AUTO_INCREMENT column must be a primary key")
+		}
+		// Check if another column already has AutoIncrement
+		for _, existing := range s.Columns {
+			if existing.AutoIncrement {
+				return fmt.Errorf("table already has an AUTO_INCREMENT column: %s", existing.Name)
+			}
 		}
 	}
 
@@ -212,6 +229,9 @@ func (s *Schema) Marshal() []byte {
 		if col.Index {
 			flags |= 1 << 3
 		}
+		if col.AutoIncrement {
+			flags |= 1 << 4
+		}
 		data[offset] = flags
 		offset++
 	}
@@ -272,12 +292,13 @@ func UnmarshalSchema(data []byte) (*Schema, error) {
 		offset++
 
 		col := &Column{
-			Name:       colName,
-			Type:       colType,
-			PrimaryKey: (flags & (1 << 0)) != 0,
-			NotNull:    (flags & (1 << 1)) != 0,
-			Unique:     (flags & (1 << 2)) != 0,
-			Index:      (flags & (1 << 3)) != 0,
+			Name:          colName,
+			Type:          colType,
+			PrimaryKey:    (flags & (1 << 0)) != 0,
+			NotNull:       (flags & (1 << 1)) != 0,
+			Unique:        (flags & (1 << 2)) != 0,
+			Index:         (flags & (1 << 3)) != 0,
+			AutoIncrement: (flags & (1 << 4)) != 0,
 		}
 
 		if err := schema.AddColumn(col); err != nil {
@@ -295,12 +316,13 @@ func (s *Schema) Clone() *Schema {
 
 	for _, col := range s.Columns {
 		clone.Columns = append(clone.Columns, &Column{
-			Name:       col.Name,
-			Type:       col.Type,
-			PrimaryKey: col.PrimaryKey,
-			NotNull:    col.NotNull,
-			Unique:     col.Unique,
-			Index:      col.Index,
+			Name:          col.Name,
+			Type:          col.Type,
+			PrimaryKey:    col.PrimaryKey,
+			NotNull:       col.NotNull,
+			Unique:        col.Unique,
+			Index:         col.Index,
+			AutoIncrement: col.AutoIncrement,
 		})
 	}
 

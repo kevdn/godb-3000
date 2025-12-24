@@ -88,7 +88,7 @@ func (r *Row) Marshal(schema *Schema) ([]byte, error) {
 	}
 
 	// Calculate null bitmap size
-	bitmapSize := (schema.NumColumns() + 7) / 8
+	bitmapSize := (schema.NumColumns() + 7) / 8 // ceiling division ceil(a / b) = (a + b - 1) / b
 
 	// Estimate size (will be exact after we know variable-length sizes)
 	estimatedSize := bitmapSize

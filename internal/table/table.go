@@ -3,6 +3,7 @@ package table
 import (
 	"encoding/binary"
 	"fmt"
+	"sync"
 
 	"github.com/khoale/godb-3000/internal/kv"
 )
@@ -17,10 +18,11 @@ import (
 //
 // This design allows multiple tables to coexist in a single KV store.
 type Table struct {
-	name   string
-	schema *Schema
-	store  *kv.KV
-	prefix string // Key prefix for this table's data
+	name      string
+	schema    *Schema
+	store     *kv.KV
+	prefix    string     // Key prefix for this table's data
+	counterMu sync.Mutex // Protects auto-increment counter operations
 }
 
 // NewTable creates a new table with the given schema.
@@ -92,22 +94,45 @@ func (t *Table) Schema() *Schema {
 }
 
 // Insert inserts a new row into the table.
-// The row must include a value for the primary key.
+// If the primary key is auto-increment and the value is nil, it will be generated automatically.
 func (t *Table) Insert(row *Row) error {
-	// Validate row against schema
-	if err := t.schema.Validate(row); err != nil {
-		return fmt.Errorf("validation failed: %w", err)
-	}
-
-	// Get primary key value
+	// Get primary key column
 	pkIndex, err := t.schema.GetColumnIndex(t.schema.PrimaryKey)
 	if err != nil {
 		return err
 	}
 
+	pkCol, err := t.schema.GetColumn(t.schema.PrimaryKey)
+	if err != nil {
+		return err
+	}
+
 	pkValue := row.Values[pkIndex]
-	if pkValue == nil {
+
+	// Auto-generate ID if primary key is nil and column is auto-increment
+	if pkValue == nil && pkCol.AutoIncrement {
+		nextID, err := t.getNextAutoIncrementID()
+		if err != nil {
+			return fmt.Errorf("failed to generate auto-increment ID: %w", err)
+		}
+		row.Values[pkIndex] = nextID
+		pkValue = nextID
+	} else if pkValue == nil {
 		return fmt.Errorf("primary key cannot be NULL")
+	}
+
+	// If user provided manual ID and column is auto-increment, update counter if needed
+	if pkCol.AutoIncrement {
+		if manualID, ok := pkValue.(int64); ok {
+			if err := t.updateAutoIncrementCounter(manualID); err != nil {
+				return fmt.Errorf("failed to update auto-increment counter: %w", err)
+			}
+		}
+	}
+
+	// Validate row against schema
+	if err := t.schema.Validate(row); err != nil {
+		return fmt.Errorf("validation failed: %w", err)
 	}
 
 	// Generate row key
@@ -372,6 +397,10 @@ func (t *Table) Drop() error {
 		return err
 	}
 
+	// Delete auto-increment counter
+	counterKey := []byte("__autoinc__:" + t.name)
+	t.store.Delete(counterKey) // Ignore error if doesn't exist
+
 	// Delete all rows
 	startKey := []byte(t.prefix)
 	endKey := []byte(t.prefix + "\xff")
@@ -418,6 +447,11 @@ func (t *Table) Truncate() error {
 		}
 	}
 
+	// Reset auto-increment counter if table has auto-increment column
+	if err := t.resetAutoIncrementCounter(); err != nil {
+		return fmt.Errorf("failed to reset auto-increment counter: %w", err)
+	}
+
 	return nil
 }
 
@@ -442,4 +476,85 @@ func TableExists(name string, store *kv.KV) (bool, error) {
 	schemaKey := []byte("__schema__:" + name)
 	_, found, err := store.Get(schemaKey)
 	return found, err
+}
+
+// getNextAutoIncrementID returns the next auto-increment ID for the table.
+func (t *Table) getNextAutoIncrementID() (int64, error) {
+	t.counterMu.Lock()
+	defer t.counterMu.Unlock()
+
+	counterKey := []byte("__autoinc__:" + t.name)
+
+	// Get current counter value
+	data, found, err := t.store.Get(counterKey)
+	if err != nil {
+		return 0, fmt.Errorf("failed to read counter: %w", err)
+	}
+
+	var nextID int64 = 1
+	if found {
+		currentID := int64(binary.LittleEndian.Uint64(data))
+		nextID = currentID + 1
+	}
+
+	// Update counter
+	newData := make([]byte, 8)
+	binary.LittleEndian.PutUint64(newData, uint64(nextID))
+	if err := t.store.Set(counterKey, newData); err != nil {
+		return 0, fmt.Errorf("failed to update counter: %w", err)
+	}
+
+	return nextID, nil
+}
+
+// updateAutoIncrementCounter updates the counter if the provided ID is greater than current counter.
+// This handles the case where users manually provide IDs.
+func (t *Table) updateAutoIncrementCounter(providedID int64) error {
+	t.counterMu.Lock()
+	defer t.counterMu.Unlock()
+
+	counterKey := []byte("__autoinc__:" + t.name)
+
+	// Get current counter value
+	data, found, err := t.store.Get(counterKey)
+	if err != nil {
+		return fmt.Errorf("failed to read counter: %w", err)
+	}
+
+	var currentID int64 = 0
+	if found {
+		currentID = int64(binary.LittleEndian.Uint64(data))
+	}
+
+	// Update counter only if provided ID is greater
+	if providedID > currentID {
+		newData := make([]byte, 8)
+		binary.LittleEndian.PutUint64(newData, uint64(providedID))
+		if err := t.store.Set(counterKey, newData); err != nil {
+			return fmt.Errorf("failed to update counter: %w", err)
+		}
+	}
+
+	return nil
+}
+
+// resetAutoIncrementCounter resets the auto-increment counter to 0.
+// Used when truncating a table.
+func (t *Table) resetAutoIncrementCounter() error {
+	// Check if table has auto-increment column
+	hasAutoInc := false
+	for _, col := range t.schema.Columns {
+		if col.AutoIncrement {
+			hasAutoInc = true
+			break
+		}
+	}
+
+	if !hasAutoInc {
+		return nil // No auto-increment column, nothing to reset
+	}
+
+	counterKey := []byte("__autoinc__:" + t.name)
+	_, err := t.store.Delete(counterKey)
+	return err
 }

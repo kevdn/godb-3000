@@ -41,11 +41,12 @@ func (s *CreateTableStmt) Type() StatementType { return StmtCreateTable }
 
 // ColumnDef represents a column definition in CREATE TABLE.
 type ColumnDef struct {
-	Name       string
-	Type       table.DataType
-	PrimaryKey bool
-	NotNull    bool
-	Unique     bool
+	Name          string
+	Type          table.DataType
+	PrimaryKey    bool
+	NotNull       bool
+	Unique        bool
+	AutoIncrement bool
 }
 
 // DropTableStmt represents a DROP TABLE statement.
@@ -281,6 +282,8 @@ func (p *Parser) parseCreateTable() (*CreateTableStmt, error) {
 				}
 			case "UNIQUE":
 				col.Unique = true
+			case "AUTO_INCREMENT", "AUTOINCREMENT":
+				col.AutoIncrement = true
 			}
 			i++
 		}

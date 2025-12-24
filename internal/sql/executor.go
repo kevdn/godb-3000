@@ -78,11 +78,12 @@ func (e *Executor) executeCreateTable(stmt *CreateTableStmt) (*Result, error) {
 
 	for _, colDef := range stmt.Columns {
 		col := &table.Column{
-			Name:       colDef.Name,
-			Type:       colDef.Type,
-			PrimaryKey: colDef.PrimaryKey,
-			NotNull:    colDef.NotNull,
-			Unique:     colDef.Unique,
+			Name:          colDef.Name,
+			Type:          colDef.Type,
+			PrimaryKey:    colDef.PrimaryKey,
+			NotNull:       colDef.NotNull,
+			Unique:        colDef.Unique,
+			AutoIncrement: colDef.AutoIncrement,
 		}
 
 		if err := schema.AddColumn(col); err != nil {
