@@ -25,6 +25,7 @@ type KV struct {
 	btree        *btree.BTree
 	meta         *Metadata
 	wal          *wal.WAL
+	readOnly     bool
 	mu           sync.RWMutex
 	txnMu        sync.Mutex // Separate lock for transaction management
 	inTxn        bool
@@ -74,8 +75,9 @@ func Open(path string, opts Options) (*KV, error) {
 	}
 
 	kv := &KV{
-		pager:  pager,
-		txnLog: make([]*txnEntry, 0),
+		pager:    pager,
+		txnLog:   make([]*txnEntry, 0),
+		readOnly: opts.ReadOnly,
 	}
 
 	// Load or initialize metadata
@@ -246,7 +248,13 @@ func (kv *KV) loadMetadata() error {
 	rootPageID := storage.PageID(binary.LittleEndian.Uint64(payload[12:20]))
 
 	// Read page manager state
+	if len(payload) < 24 {
+		return fmt.Errorf("corrupted metadata: payload too short")
+	}
 	pmDataLen := binary.LittleEndian.Uint32(payload[20:24])
+	if int(pmDataLen) > len(payload)-24 {
+		return fmt.Errorf("corrupted metadata: page manager data length %d exceeds available space", pmDataLen)
+	}
 	pmData := payload[24 : 24+pmDataLen]
 
 	pageMgr := storage.NewPageManager(1)
@@ -276,6 +284,9 @@ func (kv *KV) saveMetadata() error {
 
 	// Write page manager state
 	pmData := kv.meta.PageMgr.Marshal()
+	if len(pmData) > len(payload)-24 {
+		return fmt.Errorf("page manager data too large: %d bytes (max %d)", len(pmData), len(payload)-24)
+	}
 	binary.LittleEndian.PutUint32(payload[20:24], uint32(len(pmData)))
 	copy(payload[24:], pmData)
 
@@ -303,6 +314,10 @@ func (kv *KV) Set(key, value []byte) error {
 
 	kv.mu.Lock()
 	defer kv.mu.Unlock()
+
+	if kv.readOnly {
+		return fmt.Errorf("cannot set key: KV store is opened in read-only mode")
+	}
 
 	// If in transaction, log the operation
 	if kv.inTxn {
@@ -340,6 +355,10 @@ func (kv *KV) Delete(key []byte) (bool, error) {
 
 	kv.mu.Lock()
 	defer kv.mu.Unlock()
+
+	if kv.readOnly {
+		return false, fmt.Errorf("cannot delete key: KV store is opened in read-only mode")
+	}
 
 	// If in transaction, log the operation
 	if kv.inTxn {
