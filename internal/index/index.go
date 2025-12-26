@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/binary"
 	"fmt"
+	"math"
 
 	"github.com/khoale/godb-3000/internal/kv"
 	"github.com/khoale/godb-3000/internal/table"
@@ -332,7 +333,7 @@ func (idx *Index) encodeValue(value interface{}) ([]byte, error) {
 			return nil, fmt.Errorf("expected float64, got %T", value)
 		}
 		buf := make([]byte, 8)
-		binary.BigEndian.PutUint64(buf, uint64(v))
+		binary.BigEndian.PutUint64(buf, math.Float64bits(v))
 		return buf, nil
 
 	default:
@@ -357,6 +358,11 @@ func (idx *Index) encodePrimaryKey(pk interface{}) ([]byte, error) {
 }
 
 // extractPrimaryKey extracts the primary key from an index key.
+// Note: Without schema information, this function uses heuristics:
+// - 8-byte values are decoded as int64
+// - All other values are decoded as string
+// This means []byte primary keys that are not 8 bytes will be incorrectly
+// decoded as strings. This is a known limitation.
 func (idx *Index) extractPrimaryKey(indexKey []byte) (interface{}, error) {
 	// Skip prefix
 	if !bytes.HasPrefix(indexKey, []byte(idx.prefix)) {
@@ -380,6 +386,7 @@ func (idx *Index) extractPrimaryKey(indexKey []byte) (interface{}, error) {
 	}
 
 	// Otherwise treat as string
+	// Note: []byte PKs that are not 8 bytes will be incorrectly decoded as strings
 	return string(pkBytes), nil
 }
 
