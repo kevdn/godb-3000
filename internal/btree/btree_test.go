@@ -255,6 +255,52 @@ func TestBTreeDelete(t *testing.T) {
 			t.Error("Expected error for empty key")
 		}
 	})
+
+	t.Run("DeleteAllKeysFromTree", func(t *testing.T) {
+		// Insert a few keys
+		keys := []string{"a", "b", "c"}
+		for _, k := range keys {
+			btree.Insert([]byte(k), []byte("value"))
+		}
+
+		// Delete all keys
+		for _, k := range keys {
+			deleted, err := btree.Delete([]byte(k))
+			if err != nil {
+				t.Fatalf("Delete failed: %v", err)
+			}
+			if !deleted {
+				t.Errorf("Failed to delete key %s", k)
+			}
+		}
+
+		// Tree should still be valid (empty root leaf is allowed)
+		stats, err := btree.Stats()
+		if err != nil {
+			t.Fatalf("Stats failed: %v", err)
+		}
+		if stats.NumKeys != 0 {
+			t.Errorf("Expected 0 keys after deleting all, got %d", stats.NumKeys)
+		}
+		if stats.Depth != 1 {
+			t.Errorf("Expected depth 1 after deleting all, got %d", stats.Depth)
+		}
+	})
+
+	t.Run("IteratorOnEmptyTree", func(t *testing.T) {
+		// Create iterator on empty tree
+		iter, err := btree.NewIterator(nil, nil)
+		if err != nil {
+			t.Fatalf("NewIterator failed: %v", err)
+		}
+		defer iter.Close()
+
+		// Should return false immediately
+		_, _, ok := iter.Next()
+		if ok {
+			t.Error("Iterator should return false on empty tree")
+		}
+	})
 }
 
 func TestBTreePageFreeing(t *testing.T) {

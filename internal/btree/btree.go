@@ -338,6 +338,11 @@ func (bt *BTree) splitNode(nodeID storage.PageID, node *Node) (*splitInfo, error
 
 // Delete removes a key from the tree.
 // Returns true if the key was found and deleted.
+//
+// Note: This implementation does not perform full B-tree rebalancing.
+// Nodes that become underfull (below MinKeys) are not merged or redistributed.
+// Only root shrinking is handled when the root becomes empty.
+// An empty leaf root is allowed and represents an empty tree.
 func (bt *BTree) Delete(key []byte) (bool, error) {
 	if len(key) == 0 {
 		return false, fmt.Errorf("empty key")
@@ -361,7 +366,8 @@ func (bt *BTree) Delete(key []byte) (bool, error) {
 		return false, nil
 	}
 
-	// If root is internal and has only one child, make that child the new root
+	// If root is internal and has only one child, make that child the new root.
+	// Note: deleteFromNode modifies root in-place, so root.NumKeys() reflects the updated state.
 	if root.IsInternal() && root.NumKeys() == 0 {
 		oldRootID := bt.rootID
 		bt.rootID = root.GetChild(0)
