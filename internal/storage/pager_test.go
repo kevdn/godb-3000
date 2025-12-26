@@ -82,6 +82,104 @@ func TestPager(t *testing.T) {
 		}
 	})
 
+	t.Run("ReadOnlyModeWritePage", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		dbPath := filepath.Join(tmpDir, "test.db")
+
+		// Create file first
+		pager1 := setupTestPager(t, dbPath)
+		pid, _ := pager1.AllocatePage()
+		pager1.Close()
+
+		// Open in read-only mode
+		opts := DefaultPagerOptions()
+		opts.ReadOnly = true
+		pager2, err := OpenPager(dbPath, opts)
+		if err != nil {
+			t.Fatalf("Failed to open in read-only mode: %v", err)
+		}
+		defer pager2.Close()
+
+		// Try to write - should fail
+		page := NewPage(PageTypeNode)
+		err = pager2.WritePage(pid, page)
+		if err == nil {
+			t.Error("Expected error when writing in read-only mode")
+		}
+	})
+
+	t.Run("ReadOnlyModeAllocatePage", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		dbPath := filepath.Join(tmpDir, "test.db")
+
+		// Create file first
+		pager1, _ := OpenPager(dbPath, DefaultPagerOptions())
+		pager1.Close()
+
+		// Open in read-only mode
+		opts := DefaultPagerOptions()
+		opts.ReadOnly = true
+		pager2, err := OpenPager(dbPath, opts)
+		if err != nil {
+			t.Fatalf("Failed to open in read-only mode: %v", err)
+		}
+		defer pager2.Close()
+
+		// Try to allocate - should fail
+		_, err = pager2.AllocatePage()
+		if err == nil {
+			t.Error("Expected error when allocating in read-only mode")
+		}
+	})
+
+	t.Run("ReadOnlyModeFreePage", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		dbPath := filepath.Join(tmpDir, "test.db")
+
+		// Create file first with a page
+		pager1 := setupTestPager(t, dbPath)
+		pid, _ := pager1.AllocatePage()
+		pager1.Close()
+
+		// Open in read-only mode
+		opts := DefaultPagerOptions()
+		opts.ReadOnly = true
+		pager2, err := OpenPager(dbPath, opts)
+		if err != nil {
+			t.Fatalf("Failed to open in read-only mode: %v", err)
+		}
+		defer pager2.Close()
+
+		// Try to free - should fail
+		err = pager2.FreePage(pid)
+		if err == nil {
+			t.Error("Expected error when freeing page in read-only mode")
+		}
+	})
+
+	t.Run("ReadOnlyModeFlush", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		dbPath := filepath.Join(tmpDir, "test.db")
+
+		// Create file first
+		pager1, _ := OpenPager(dbPath, DefaultPagerOptions())
+		pager1.Close()
+
+		// Open in read-only mode
+		opts := DefaultPagerOptions()
+		opts.ReadOnly = true
+		pager2, err := OpenPager(dbPath, opts)
+		if err != nil {
+			t.Fatalf("Failed to open in read-only mode: %v", err)
+		}
+		defer pager2.Close()
+
+		// Flush should succeed as no-op in read-only mode
+		if err := pager2.Flush(); err != nil {
+			t.Errorf("Flush should succeed as no-op in read-only mode: %v", err)
+		}
+	})
+
 	t.Run("InvalidFileSize", func(t *testing.T) {
 		tmpDir := t.TempDir()
 		dbPath := filepath.Join(tmpDir, "invalid.db")

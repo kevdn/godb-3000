@@ -25,6 +25,7 @@ type Pager struct {
 	cache      *PageCache
 	dirtyPages map[PageID]*Page // Pages modified but not yet fsynced
 	pageMgr    *PageManager     // Page allocation manager (set after metadata load)
+	readOnly   bool             // Whether pager is opened in read-only mode
 	mu         sync.RWMutex
 }
 
@@ -74,6 +75,7 @@ func OpenPager(path string, opts PagerOptions) (*Pager, error) {
 		numPages:   numPages,
 		cache:      NewPageCache(opts.CacheSize),
 		dirtyPages: make(map[PageID]*Page),
+		readOnly:   opts.ReadOnly,
 	}
 
 	// If file is new, initialize with metadata page
@@ -179,6 +181,10 @@ func (p *Pager) WritePage(pid PageID, page *Page) error {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
+	if p.readOnly {
+		return fmt.Errorf("cannot write page %d: pager is opened in read-only mode", pid)
+	}
+
 	// Extend file if necessary
 	if pid >= p.numPages {
 		p.numPages = pid + 1
@@ -224,6 +230,10 @@ func (p *Pager) AllocatePage() (PageID, error) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
+	if p.readOnly {
+		return InvalidPageID, fmt.Errorf("cannot allocate page: pager is opened in read-only mode")
+	}
+
 	if p.pageMgr == nil {
 		return InvalidPageID, fmt.Errorf("PageManager not set - call SetPageManager() first")
 	}
@@ -248,6 +258,10 @@ func (p *Pager) AllocatePage() (PageID, error) {
 func (p *Pager) FreePage(pid PageID) error {
 	p.mu.Lock()
 	defer p.mu.Unlock()
+
+	if p.readOnly {
+		return fmt.Errorf("cannot free page %d: pager is opened in read-only mode", pid)
+	}
 
 	if p.pageMgr == nil {
 		return fmt.Errorf("PageManager not set - call SetPageManager() first")
@@ -282,6 +296,11 @@ func (p *Pager) FreePage(pid PageID) error {
 func (p *Pager) Flush() error {
 	p.mu.Lock()
 	defer p.mu.Unlock()
+
+	if p.readOnly {
+		// In read-only mode, there should be no dirty pages, but we allow flush as no-op
+		return nil
+	}
 
 	if len(p.dirtyPages) == 0 {
 		return nil

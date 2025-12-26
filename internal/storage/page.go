@@ -113,13 +113,15 @@ func (pc *PageCache) Put(pid PageID, page *Page) bool {
 	}
 
 	// Simple eviction: if full, clear the entire cache
+	evicted := false
 	if pc.size >= pc.max {
 		pc.Clear()
+		evicted = true
 	}
 
 	pc.pages[pid] = page
 	pc.size++
-	return false
+	return evicted
 }
 
 // Remove removes a page from the cache.

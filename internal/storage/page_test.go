@@ -193,7 +193,10 @@ func TestPageCache(t *testing.T) {
 
 		// Fill cache to capacity
 		for i := 0; i < maxSize; i++ {
-			cache.Put(PageID(i+1), NewPage(PageTypeNode))
+			evicted := cache.Put(PageID(i+1), NewPage(PageTypeNode))
+			if evicted {
+				t.Error("Should not evict when cache has space")
+			}
 		}
 
 		if cache.Size() != maxSize {
@@ -201,7 +204,10 @@ func TestPageCache(t *testing.T) {
 		}
 
 		// Add one more - should trigger eviction (simple clear all in this implementation)
-		cache.Put(PageID(maxSize+1), NewPage(PageTypeNode))
+		evicted := cache.Put(PageID(maxSize+1), NewPage(PageTypeNode))
+		if !evicted {
+			t.Error("Should return true when eviction occurs")
+		}
 
 		// After eviction, cache should be rebuilt with just the new page
 		if cache.Size() != 1 {
