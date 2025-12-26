@@ -265,6 +265,12 @@ func (n *Node) Serialize() (*storage.Page, error) {
 
 	} else {
 		// Serialize internal node
+		// Internal nodes must have len(children) == len(keys) + 1
+		expectedChildren := len(n.keys) + 1
+		if len(n.children) != expectedChildren {
+			return nil, fmt.Errorf("invalid internal node: expected %d children for %d keys, got %d", expectedChildren, len(n.keys), len(n.children))
+		}
+
 		// Write first child
 		if offset+8 > len(payload) {
 			return nil, fmt.Errorf("node too large to fit in page")
