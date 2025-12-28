@@ -29,6 +29,8 @@ const (
 	StmtBegin
 	StmtCommit
 	StmtRollback
+	StmtShowTables
+	StmtBackup
 )
 
 // CreateTableStmt represents a CREATE TABLE statement.
@@ -127,6 +129,18 @@ type RollbackStmt struct{}
 
 func (s *RollbackStmt) Type() StatementType { return StmtRollback }
 
+// ShowTablesStmt represents a SHOW TABLES statement.
+type ShowTablesStmt struct{}
+
+func (s *ShowTablesStmt) Type() StatementType { return StmtShowTables }
+
+// BackupStmt represents a BACKUP TO statement.
+type BackupStmt struct {
+	Path string
+}
+
+func (s *BackupStmt) Type() StatementType { return StmtBackup }
+
 // WhereClause represents a WHERE condition.
 type WhereClause struct {
 	Column   string
@@ -177,6 +191,10 @@ func (p *Parser) Parse() (Statement, error) {
 		return &CommitStmt{}, nil
 	case "ROLLBACK":
 		return &RollbackStmt{}, nil
+	case "SHOW":
+		return p.parseShow()
+	case "BACKUP":
+		return p.parseBackup()
 	default:
 		return nil, fmt.Errorf("unsupported statement type: %s", keyword)
 	}
@@ -585,6 +603,52 @@ func (p *Parser) parseDelete() (*DeleteStmt, error) {
 	}
 
 	return stmt, nil
+}
+
+// parseShow parses SHOW TABLES statement.
+// Syntax: SHOW TABLES
+func (p *Parser) parseShow() (Statement, error) {
+	if len(p.tokens) < 2 {
+		return nil, fmt.Errorf("incomplete SHOW statement")
+	}
+
+	objType := strings.ToUpper(p.tokens[1])
+	switch objType {
+	case "TABLES":
+		if len(p.tokens) > 2 {
+			return nil, fmt.Errorf("unexpected tokens after SHOW TABLES")
+		}
+		return &ShowTablesStmt{}, nil
+	default:
+		return nil, fmt.Errorf("unsupported SHOW type: %s", objType)
+	}
+}
+
+// parseBackup parses BACKUP TO statement.
+// Syntax: BACKUP TO 'path'
+func (p *Parser) parseBackup() (Statement, error) {
+	if len(p.tokens) < 3 {
+		return nil, fmt.Errorf("incomplete BACKUP statement, expected: BACKUP TO 'path'")
+	}
+
+	if strings.ToUpper(p.tokens[1]) != "TO" {
+		return nil, fmt.Errorf("expected TO after BACKUP, got: %s", p.tokens[1])
+	}
+
+	path := p.tokens[2]
+	// Remove quotes if present
+	if (strings.HasPrefix(path, "'") && strings.HasSuffix(path, "'")) ||
+		(strings.HasPrefix(path, "\"") && strings.HasSuffix(path, "\"")) {
+		path = path[1 : len(path)-1]
+	}
+
+	if len(p.tokens) > 3 {
+		return nil, fmt.Errorf("unexpected tokens after BACKUP TO path")
+	}
+
+	return &BackupStmt{
+		Path: path,
+	}, nil
 }
 
 // parseWhere parses a WHERE clause.

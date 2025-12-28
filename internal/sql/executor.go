@@ -49,6 +49,10 @@ func (e *Executor) Execute(stmt Statement) (*Result, error) {
 		return e.executeCommit(s)
 	case *RollbackStmt:
 		return e.executeRollback(s)
+	case *ShowTablesStmt:
+		return e.executeShowTables(s)
+	case *BackupStmt:
+		return e.executeBackup(s)
 	default:
 		return nil, fmt.Errorf("unsupported statement type")
 	}
@@ -291,7 +295,13 @@ func (e *Executor) executeSelect(stmt *SelectStmt) (*Result, error) {
 
 				// Fetch rows by primary key
 				for _, pk := range pks {
-					row, err := tbl.Get(pk)
+					var row *table.Row
+					var err error
+					if e.curTxn != nil {
+						row, err = e.curTxn.TableGet(tbl, pk)
+					} else {
+						row, err = tbl.Get(pk)
+					}
 					if err != nil {
 						// Row might have been deleted, skip
 						continue
@@ -335,7 +345,13 @@ func (e *Executor) executeSelect(stmt *SelectStmt) (*Result, error) {
 
 				// Fetch rows by primary key
 				for _, pk := range pks {
-					row, err := tbl.Get(pk)
+					var row *table.Row
+					var err error
+					if e.curTxn != nil {
+						row, err = e.curTxn.TableGet(tbl, pk)
+					} else {
+						row, err = tbl.Get(pk)
+					}
 					if err != nil {
 						continue
 					}
@@ -372,10 +388,11 @@ func (e *Executor) executeSelect(stmt *SelectStmt) (*Result, error) {
 
 	// Fall back to full table scan
 	count := 0
-	err = tbl.Scan(func(row *table.Row) bool {
+	scanFunc := func(row *table.Row) bool {
 		// Apply WHERE clause if present
 		if stmt.Where != nil {
-			if !e.evaluateWhere(row, schema, stmt.Where) {
+			// Use GetByName for cleaner column access
+			if !e.evaluateWhereWithGetByName(row, schema, stmt.Where) {
 				return true // Continue scanning
 			}
 		}
@@ -396,7 +413,13 @@ func (e *Executor) executeSelect(stmt *SelectStmt) (*Result, error) {
 		rows = append(rows, projectedRow)
 		count++
 		return true
-	})
+	}
+
+	if e.curTxn != nil {
+		err = e.curTxn.TableScan(tbl, scanFunc)
+	} else {
+		err = tbl.Scan(scanFunc)
+	}
 	if err != nil {
 		return nil, fmt.Errorf("scan failed: %w", err)
 	}
@@ -441,7 +464,8 @@ func (e *Executor) updateIndexesForUpdate(tableName string, schema *table.Schema
 		newValue := newRow.Values[colIdx]
 
 		// If value changed, update index
-		if oldValue != newValue {
+		// Use compareValues to properly handle all types including []byte
+		if compareValues(oldValue, newValue) != 0 {
 			// Delete old index entry
 			if oldValue != nil {
 				if err := idx.Delete(oldValue, pkValue); err != nil {
@@ -766,6 +790,41 @@ func (e *Executor) executeRollback(stmt *RollbackStmt) (*Result, error) {
 	}, nil
 }
 
+// executeShowTables executes a SHOW TABLES statement.
+func (e *Executor) executeShowTables(stmt *ShowTablesStmt) (*Result, error) {
+	tables, err := table.ListTables(e.store)
+	if err != nil {
+		return nil, fmt.Errorf("failed to list tables: %w", err)
+	}
+
+	// Create result rows - each row contains one table name
+	rows := make([]*table.Row, len(tables))
+	for i, tableName := range tables {
+		rows[i] = table.NewRow(tableName)
+	}
+
+	return &Result{
+		Rows:    rows,
+		Columns: []string{"Tables"},
+		Message: fmt.Sprintf("%d table(s)", len(tables)),
+	}, nil
+}
+
+// executeBackup executes a BACKUP TO statement.
+func (e *Executor) executeBackup(stmt *BackupStmt) (*Result, error) {
+	if stmt.Path == "" {
+		return nil, fmt.Errorf("backup path cannot be empty")
+	}
+
+	if err := e.store.Backup(stmt.Path); err != nil {
+		return nil, fmt.Errorf("backup failed: %w", err)
+	}
+
+	return &Result{
+		Message: fmt.Sprintf("Database backed up to %s", stmt.Path),
+	}, nil
+}
+
 // evaluateWhere evaluates a WHERE clause against a row.
 func (e *Executor) evaluateWhere(row *table.Row, schema *table.Schema, where *WhereClause) bool {
 	colIdx, err := schema.GetColumnIndex(where.Column)
@@ -800,8 +859,53 @@ func (e *Executor) evaluateWhere(row *table.Row, schema *table.Schema, where *Wh
 	}
 }
 
+// evaluateWhereWithGetByName evaluates a WHERE clause using GetByName for cleaner column access.
+// This utilizes the previously unused row.GetByName() method.
+func (e *Executor) evaluateWhereWithGetByName(row *table.Row, schema *table.Schema, where *WhereClause) bool {
+	rowValue, err := row.GetByName(schema, where.Column)
+	if err != nil {
+		return false
+	}
+
+	whereValue := where.Value
+
+	// Handle NULL comparisons
+	if rowValue == nil || whereValue == nil {
+		return rowValue == whereValue
+	}
+
+	// Compare based on operator
+	switch where.Operator {
+	case "=":
+		return compareValues(rowValue, whereValue) == 0
+	case "!=", "<>":
+		return compareValues(rowValue, whereValue) != 0
+	case ">":
+		return compareValues(rowValue, whereValue) > 0
+	case "<":
+		return compareValues(rowValue, whereValue) < 0
+	case ">=":
+		return compareValues(rowValue, whereValue) >= 0
+	case "<=":
+		return compareValues(rowValue, whereValue) <= 0
+	default:
+		return false
+	}
+}
+
 // compareValues compares two values and returns -1, 0, or 1.
 func compareValues(a, b interface{}) int {
+	// Handle nil values
+	if a == nil || b == nil {
+		if a == nil && b == nil {
+			return 0
+		}
+		if a == nil {
+			return -1
+		}
+		return 1
+	}
+
 	switch v1 := a.(type) {
 	case int64:
 		v2, ok := b.(int64)
@@ -848,6 +952,29 @@ func compareValues(a, b interface{}) int {
 			return -1
 		}
 		return 1
+	case []byte:
+		v2, ok := b.([]byte)
+		if !ok {
+			return -1
+		}
+		// Compare byte slices lexicographically
+		minLen := len(v1)
+		if len(v2) < minLen {
+			minLen = len(v2)
+		}
+		for i := 0; i < minLen; i++ {
+			if v1[i] < v2[i] {
+				return -1
+			} else if v1[i] > v2[i] {
+				return 1
+			}
+		}
+		if len(v1) < len(v2) {
+			return -1
+		} else if len(v1) > len(v2) {
+			return 1
+		}
+		return 0
 	default:
 		return 0
 	}

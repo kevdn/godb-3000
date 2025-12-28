@@ -6,9 +6,9 @@ import (
 	"os"
 	"strings"
 
-	"github.com/khoale/godb-3000/pkg/kv"
-	"github.com/khoale/godb-3000/pkg/sql"
-	"github.com/khoale/godb-3000/pkg/table"
+	"github.com/khoale/godb-3000/internal/kv"
+	"github.com/khoale/godb-3000/internal/sql"
+	"github.com/khoale/godb-3000/internal/table"
 )
 
 const banner = `

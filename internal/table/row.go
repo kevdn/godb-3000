@@ -182,7 +182,7 @@ func UnmarshalRow(data []byte, schema *Schema) (*Row, error) {
 	}
 
 	numCols := schema.NumColumns()
-	bitmapSize := (numCols + 7) / 8
+	bitmapSize := (numCols + 7) / 8 // ceiling division ceil(a / b) = (a + b - 1) / b
 
 	if len(data) < bitmapSize {
 		return nil, fmt.Errorf("row data too short for null bitmap")

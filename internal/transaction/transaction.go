@@ -1,6 +1,7 @@
 package transaction
 
 import (
+	"encoding/binary"
 	"fmt"
 	"sync"
 	"time"
@@ -199,6 +200,11 @@ func (tm *TxnManager) validate(txn *Transaction) error {
 	// For RepeatableRead: Check if any keys in read set were modified by other transactions
 	// This implements Optimistic Concurrency Control (OCC)
 	for key := range txn.readSet {
+		// Skip keys we wrote ourselves (read-your-writes is always allowed)
+		if _, weWrote := txn.writeSet[key]; weWrote {
+			continue
+		}
+
 		currentValue, _, err := txn.store.Get([]byte(key))
 		if err != nil {
 			return err
@@ -241,8 +247,11 @@ func (txn *Transaction) Get(key []byte) ([]byte, bool, error) {
 
 	// Track read for validation (only for RepeatableRead and Serializable)
 	// ReadCommitted doesn't track reads to allow non-repeatable reads
+	// Only track on first read to preserve original value for conflict detection
 	if txn.isolationLvl >= RepeatableRead {
-		txn.readSet[keyStr] = value
+		if _, alreadyTracked := txn.readSet[keyStr]; !alreadyTracked {
+			txn.readSet[keyStr] = append([]byte{}, value...)
+		}
 	}
 
 	return value, found, nil
@@ -289,66 +298,257 @@ func (txn *Transaction) Delete(key []byte) error {
 }
 
 // TableGet retrieves a row from a table within the transaction.
+// This method tracks reads in readSet for RepeatableRead isolation.
 func (txn *Transaction) TableGet(tbl *table.Table, pkValue interface{}) (*table.Row, error) {
+	txn.mu.Lock()
 	if txn.committed || txn.aborted {
+		txn.mu.Unlock()
 		return nil, fmt.Errorf("transaction is not active")
 	}
+	txn.mu.Unlock()
 
-	// This would normally go through the transaction's Get method
-	// For simplicity, we directly use the table's Get method
-	// In a full implementation, we'd intercept table operations
-	return tbl.Get(pkValue)
+	// Generate row key to track in readSet
+	// We need to access the table's makeRowKey method, but it's private
+	// So we'll reconstruct the key using the table's prefix and schema
+	rowKey, err := txn.makeTableRowKey(tbl, pkValue)
+	if err != nil {
+		return nil, fmt.Errorf("failed to generate row key: %w", err)
+	}
+
+	// Track read using transaction's Get method (which handles readSet tracking)
+	rowData, found, err := txn.Get(rowKey)
+	if err != nil {
+		return nil, err
+	}
+	if !found {
+		return nil, fmt.Errorf("row not found: %v", pkValue)
+	}
+
+	// Unmarshal row
+	schema := tbl.Schema()
+	row, err := table.UnmarshalRow(rowData, schema)
+	if err != nil {
+		return nil, fmt.Errorf("failed to unmarshal row: %w", err)
+	}
+
+	return row, nil
+}
+
+// makeTableRowKey generates a row key for a table (replicates table.makeRowKey logic).
+func (txn *Transaction) makeTableRowKey(tbl *table.Table, pkValue interface{}) ([]byte, error) {
+	// Get table name and schema
+	tableName := tbl.Name()
+	schema := tbl.Schema()
+	prefix := tableName + ":"
+
+	// Find primary key column
+	pkCol, err := schema.GetColumn(schema.PrimaryKey)
+	if err != nil {
+		return nil, err
+	}
+
+	// Encode primary key value based on type
+	var encodedPK []byte
+
+	switch pkCol.Type {
+	case table.TypeInt:
+		v, ok := pkValue.(int64)
+		if !ok {
+			return nil, fmt.Errorf("primary key must be int64, got %T", pkValue)
+		}
+		encodedPK = make([]byte, 8)
+		binary.BigEndian.PutUint64(encodedPK, uint64(v))
+
+	case table.TypeString:
+		v, ok := pkValue.(string)
+		if !ok {
+			return nil, fmt.Errorf("primary key must be string, got %T", pkValue)
+		}
+		encodedPK = []byte(v)
+
+	case table.TypeBytes:
+		v, ok := pkValue.([]byte)
+		if !ok {
+			return nil, fmt.Errorf("primary key must be []byte, got %T", pkValue)
+		}
+		encodedPK = v
+
+	default:
+		return nil, fmt.Errorf("unsupported primary key type: %s", pkCol.Type)
+	}
+
+	// Combine prefix and encoded PK
+	key := make([]byte, len(prefix)+len(encodedPK))
+	copy(key, prefix)
+	copy(key[len(prefix):], encodedPK)
+
+	return key, nil
+}
+
+// TableScan performs a table scan within the transaction, tracking all reads.
+func (txn *Transaction) TableScan(tbl *table.Table, callback func(row *table.Row) bool) error {
+	txn.mu.Lock()
+	if txn.committed || txn.aborted {
+		txn.mu.Unlock()
+		return fmt.Errorf("transaction is not active")
+	}
+	txn.mu.Unlock()
+
+	// Get table prefix for scanning
+	tableName := tbl.Name()
+	prefix := tableName + ":"
+	startKey := []byte(prefix)
+	endKey := []byte(prefix + "\xff")
+
+	schema := tbl.Schema()
+
+	// Use transaction's store to scan, tracking reads as we go
+	return txn.store.Scan(startKey, endKey, func(key, value []byte) bool {
+		// Track read in readSet (for RepeatableRead isolation)
+		// We need to lock to update readSet
+		txn.mu.Lock()
+		if txn.isolationLvl >= RepeatableRead {
+			keyStr := string(key)
+			if _, alreadyTracked := txn.readSet[keyStr]; !alreadyTracked {
+				txn.readSet[keyStr] = append([]byte{}, value...)
+			}
+		}
+		txn.mu.Unlock()
+
+		// Unmarshal row
+		row, err := table.UnmarshalRow(value, schema)
+		if err != nil {
+			// Skip corrupted rows
+			return true
+		}
+
+		// Call callback
+		return callback(row)
+	})
 }
 
 // TableInsert inserts a row into a table within the transaction.
+// This method tracks writes in writeSet for proper isolation.
 func (txn *Transaction) TableInsert(tbl *table.Table, row *table.Row) error {
+	txn.mu.Lock()
 	if txn.committed || txn.aborted {
+		txn.mu.Unlock()
 		return fmt.Errorf("transaction is not active")
 	}
+	txn.mu.Unlock()
 
+	// Insert using table method (handles validation, auto-increment, etc.)
 	if err := tbl.Insert(row); err != nil {
 		return err
 	}
+
+	// Track write in writeSet for OCC validation
+	// Get primary key value
+	schema := tbl.Schema()
+	pkIdx, err := schema.GetColumnIndex(schema.PrimaryKey)
+	if err != nil {
+		return fmt.Errorf("failed to get primary key index: %w", err)
+	}
+	pkValue := row.Values[pkIdx]
+
+	// Generate row key
+	rowKey, err := txn.makeTableRowKey(tbl, pkValue)
+	if err != nil {
+		return fmt.Errorf("failed to generate row key: %w", err)
+	}
+
+	// Get the serialized row data to track in writeSet
+	rowData, err := row.Marshal(schema)
+	if err != nil {
+		return fmt.Errorf("failed to marshal row: %w", err)
+	}
+
+	// Track write in writeSet
+	txn.mu.Lock()
+	txn.writeSet[string(rowKey)] = append([]byte{}, rowData...)
+	txn.mu.Unlock()
 
 	// Update indexes
 	return txn.updateIndexesForInsert(tbl, row)
 }
 
 // TableUpdate updates a row in a table within the transaction.
+// This method tracks writes in writeSet for proper isolation.
 func (txn *Transaction) TableUpdate(tbl *table.Table, pkValue interface{}, row *table.Row) error {
+	txn.mu.Lock()
 	if txn.committed || txn.aborted {
+		txn.mu.Unlock()
 		return fmt.Errorf("transaction is not active")
 	}
+	txn.mu.Unlock()
 
-	// Get old row before update
-	oldRow, err := tbl.Get(pkValue)
+	// Get old row before update (for index updates)
+	// Use TableGet to track read in readSet for proper isolation
+	oldRow, err := txn.TableGet(tbl, pkValue)
 	if err != nil {
 		return err
 	}
 
+	// Update using table method (handles validation, etc.)
 	if err := tbl.Update(pkValue, row); err != nil {
 		return err
 	}
+
+	// Track write in writeSet for OCC validation
+	rowKey, err := txn.makeTableRowKey(tbl, pkValue)
+	if err != nil {
+		return fmt.Errorf("failed to generate row key: %w", err)
+	}
+
+	// Get the serialized row data to track in writeSet
+	schema := tbl.Schema()
+	rowData, err := row.Marshal(schema)
+	if err != nil {
+		return fmt.Errorf("failed to marshal row: %w", err)
+	}
+
+	// Track write in writeSet
+	txn.mu.Lock()
+	txn.writeSet[string(rowKey)] = append([]byte{}, rowData...)
+	txn.mu.Unlock()
 
 	// Update indexes
 	return txn.updateIndexesForUpdate(tbl, oldRow, row)
 }
 
 // TableDelete deletes a row from a table within the transaction.
+// This method tracks writes in writeSet for proper isolation.
 func (txn *Transaction) TableDelete(tbl *table.Table, pkValue interface{}) error {
+	txn.mu.Lock()
 	if txn.committed || txn.aborted {
+		txn.mu.Unlock()
 		return fmt.Errorf("transaction is not active")
 	}
+	txn.mu.Unlock()
 
 	// Get row before delete (for index updates)
-	row, err := tbl.Get(pkValue)
+	// Use TableGet to track read in readSet for proper isolation
+	row, err := txn.TableGet(tbl, pkValue)
 	if err != nil {
 		return err
 	}
 
+	// Generate row key before delete
+	rowKey, err := txn.makeTableRowKey(tbl, pkValue)
+	if err != nil {
+		return fmt.Errorf("failed to generate row key: %w", err)
+	}
+
+	// Delete using table method
 	if err := tbl.Delete(pkValue); err != nil {
 		return err
 	}
+
+	// Track deletion in writeSet for OCC validation
+	// Use nil to indicate deletion
+	txn.mu.Lock()
+	txn.writeSet[string(rowKey)] = nil
+	txn.mu.Unlock()
 
 	// Update indexes
 	return txn.updateIndexesForDelete(tbl, row)
@@ -357,6 +557,13 @@ func (txn *Transaction) TableDelete(tbl *table.Table, pkValue interface{}) error
 // ID returns the transaction ID.
 func (txn *Transaction) ID() uint64 {
 	return txn.id
+}
+
+// IsolationLevel returns the transaction's isolation level.
+func (txn *Transaction) IsolationLevel() IsolationLevel {
+	txn.mu.Lock()
+	defer txn.mu.Unlock()
+	return txn.isolationLvl
 }
 
 // IsActive returns true if the transaction is still active.
