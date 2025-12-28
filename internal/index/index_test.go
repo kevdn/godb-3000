@@ -644,7 +644,7 @@ func TestIndexMetadataSerialization(t *testing.T) {
 	if unmarshaled.Unique != meta.Unique {
 		t.Errorf("Unique mismatch: expected %v, got %v", meta.Unique, unmarshaled.Unique)
 	}
-}
+	}
 
 // TestIndexMetadataErrors tests error cases for metadata unmarshaling
 func TestIndexMetadataErrors(t *testing.T) {

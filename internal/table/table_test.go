@@ -89,12 +89,12 @@ func TestTableBasicOperations(t *testing.T) {
 
 		if err := tbl.Delete(int64(3)); err != nil {
 			t.Fatalf("Delete failed: %v", err)
-		}
+			}
 
 		_, err := tbl.Get(int64(3))
 		if err == nil {
 			t.Error("Expected error when getting deleted row")
-		}
+			}
 	})
 
 	t.Run("DuplicatePrimaryKey", func(t *testing.T) {
@@ -533,7 +533,7 @@ func TestTableValidation(t *testing.T) {
 		err := tbl.Insert(row)
 		if err == nil {
 			t.Error("Expected error for NULL value in NOT NULL column")
-		}
+	}
 	})
 
 	t.Run("TypeMismatch", func(t *testing.T) {
@@ -560,7 +560,7 @@ func TestTableValidation(t *testing.T) {
 		err := tbl.Update(int64(1), updatedRow)
 		if err == nil {
 			t.Error("Expected error for primary key mismatch")
-		}
+	}
 	})
 }
 
@@ -619,9 +619,9 @@ func TestTableNewTableErrors(t *testing.T) {
 
 	t.Run("NilSchema", func(t *testing.T) {
 		_, err := NewTable("test", nil, store)
-		if err == nil {
+	if err == nil {
 			t.Error("Expected error for nil schema")
-		}
+	}
 	})
 
 	t.Run("NoPrimaryKey", func(t *testing.T) {
@@ -630,7 +630,7 @@ func TestTableNewTableErrors(t *testing.T) {
 		_, err := NewTable("test", schema, store)
 		if err == nil {
 			t.Error("Expected error for table without primary key")
-		}
+	}
 	})
 }
 
@@ -649,13 +649,13 @@ func TestTableLoadTableErrors(t *testing.T) {
 		_, err := LoadTable("", store)
 		if err == nil {
 			t.Error("Expected error for empty table name")
-		}
+	}
 	})
 
 	t.Run("NonExistentTable", func(t *testing.T) {
 		_, err := LoadTable("non_existent", store)
 		if err == nil {
 			t.Error("Expected error for non-existent table")
-		}
+	}
 	})
 }
