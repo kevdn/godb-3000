@@ -261,67 +261,73 @@ func showStats(store *kv.KV) {
 }
 
 func displayResult(result *sql.Result) {
+	// If there are rows to display, show them first
+	if len(result.Rows) > 0 {
+		// Display as table
+		if len(result.Columns) == 0 {
+			fmt.Printf("%d row(s) returned\n", len(result.Rows))
+			if result.Message != "" {
+				fmt.Println(result.Message)
+			}
+			return
+		}
+
+		// Calculate column widths
+		widths := make([]int, len(result.Columns))
+		for i, col := range result.Columns {
+			widths[i] = len(col)
+		}
+
+		for _, row := range result.Rows {
+			for i, val := range row.Values {
+				if i < len(widths) {
+					valStr := formatValue(val)
+					if len(valStr) > widths[i] {
+						widths[i] = len(valStr)
+					}
+				}
+			}
+		}
+
+		// Print header
+		fmt.Println()
+		for i, col := range result.Columns {
+			fmt.Printf("%-*s", widths[i]+2, col)
+		}
+		fmt.Println()
+
+		// Print separator
+		for i := range result.Columns {
+			fmt.Print(strings.Repeat("-", widths[i]+2))
+		}
+		fmt.Println()
+
+		// Print rows
+		for _, row := range result.Rows {
+			for i, val := range row.Values {
+				if i < len(widths) {
+					fmt.Printf("%-*s", widths[i]+2, formatValue(val))
+				}
+			}
+			fmt.Println()
+		}
+
+		fmt.Printf("\n(%d row%s)\n", len(result.Rows), pluralize(len(result.Rows)))
+		return
+	}
+
+	// No rows to display - show message or status
 	if result.Message != "" {
 		fmt.Println(result.Message)
 		return
 	}
 
-	if len(result.Rows) == 0 {
-		if result.RowsAffected > 0 {
-			fmt.Printf("%d row(s) affected\n", result.RowsAffected)
-		} else {
-			fmt.Println("No rows returned")
-		}
-		return
+	if result.RowsAffected > 0 {
+		fmt.Printf("%d row(s) affected\n", result.RowsAffected)
+	} else {
+		fmt.Println("No rows returned")
 	}
 
-	// Display as table
-	if len(result.Columns) == 0 {
-		fmt.Printf("%d row(s) returned\n", len(result.Rows))
-		return
-	}
-
-	// Calculate column widths
-	widths := make([]int, len(result.Columns))
-	for i, col := range result.Columns {
-		widths[i] = len(col)
-	}
-
-	for _, row := range result.Rows {
-		for i, val := range row.Values {
-			if i < len(widths) {
-				valStr := formatValue(val)
-				if len(valStr) > widths[i] {
-					widths[i] = len(valStr)
-				}
-			}
-		}
-	}
-
-	// Print header
-	fmt.Println()
-	for i, col := range result.Columns {
-		fmt.Printf("%-*s", widths[i]+2, col)
-	}
-	fmt.Println()
-
-	// Print separator
-	for i := range result.Columns {
-		fmt.Print(strings.Repeat("-", widths[i]+2))
-	}
-	fmt.Println()
-
-	// Print rows
-	for _, row := range result.Rows {
-		for i, val := range row.Values {
-			if i < len(widths) {
-				fmt.Printf("%-*s", widths[i]+2, formatValue(val))
-			}
-		}
-		fmt.Println()
-	}
-
-	fmt.Printf("\n(%d row%s)\n", len(result.Rows), pluralize(len(result.Rows)))
 }
 
 func formatValue(val interface{}) string {
