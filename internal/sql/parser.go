@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"github.com/khoale/godb-3000/internal/table"
+	"github.com/khoale/godb-3000/internal/transaction"
 )
 
 // Statement represents a parsed SQL statement.
@@ -115,7 +116,9 @@ type DropIndexStmt struct {
 func (s *DropIndexStmt) Type() StatementType { return StmtDropIndex }
 
 // BeginStmt represents a BEGIN TRANSACTION statement.
-type BeginStmt struct{}
+type BeginStmt struct {
+	IsolationLevel transaction.IsolationLevel // Optional isolation level
+}
 
 func (s *BeginStmt) Type() StatementType { return StmtBegin }
 
@@ -186,7 +189,7 @@ func (p *Parser) Parse() (Statement, error) {
 	case "DELETE":
 		return p.parseDelete()
 	case "BEGIN":
-		return &BeginStmt{}, nil
+		return p.parseBegin()
 	case "COMMIT":
 		return &CommitStmt{}, nil
 	case "ROLLBACK":
@@ -622,6 +625,58 @@ func (p *Parser) parseShow() (Statement, error) {
 	default:
 		return nil, fmt.Errorf("unsupported SHOW type: %s", objType)
 	}
+}
+
+// parseBegin parses BEGIN TRANSACTION statement.
+// Syntax: BEGIN [TRANSACTION] [ISOLATION LEVEL level]
+// Supported levels: READ COMMITTED, REPEATABLE READ, SERIALIZABLE
+// Default: REPEATABLE READ
+func (p *Parser) parseBegin() (Statement, error) {
+	stmt := &BeginStmt{
+		IsolationLevel: transaction.RepeatableRead, // Default to RepeatableRead
+	}
+
+	pos := 1
+
+	// Skip optional TRANSACTION keyword
+	if pos < len(p.tokens) && strings.ToUpper(p.tokens[pos]) == "TRANSACTION" {
+		pos++
+	}
+
+	// Check for ISOLATION LEVEL
+	if pos < len(p.tokens) && strings.ToUpper(p.tokens[pos]) == "ISOLATION" {
+		pos++
+		if pos >= len(p.tokens) || strings.ToUpper(p.tokens[pos]) != "LEVEL" {
+			return nil, fmt.Errorf("expected LEVEL after ISOLATION")
+		}
+		pos++
+
+		if pos >= len(p.tokens) {
+			return nil, fmt.Errorf("missing isolation level")
+		}
+
+		levelStr := strings.ToUpper(p.tokens[pos])
+		
+		// Handle two-word isolation levels
+		if levelStr == "READ" && pos+1 < len(p.tokens) && strings.ToUpper(p.tokens[pos+1]) == "COMMITTED" {
+			stmt.IsolationLevel = transaction.ReadCommitted
+			pos += 2
+		} else if levelStr == "REPEATABLE" && pos+1 < len(p.tokens) && strings.ToUpper(p.tokens[pos+1]) == "READ" {
+			stmt.IsolationLevel = transaction.RepeatableRead
+			pos += 2
+		} else if levelStr == "SERIALIZABLE" {
+			stmt.IsolationLevel = transaction.Serializable
+			pos++
+		} else {
+			return nil, fmt.Errorf("unsupported isolation level: %s (supported: READ COMMITTED, REPEATABLE READ, SERIALIZABLE)", levelStr)
+		}
+	}
+
+	if pos < len(p.tokens) {
+		return nil, fmt.Errorf("unexpected tokens after BEGIN statement")
+	}
+
+	return stmt, nil
 }
 
 // parseBackup parses BACKUP TO statement.

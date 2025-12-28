@@ -744,7 +744,13 @@ func (e *Executor) executeBegin(stmt *BeginStmt) (*Result, error) {
 		return nil, fmt.Errorf("transaction already in progress")
 	}
 
-	txn, err := e.txnMgr.Begin(transaction.Serializable)
+	// Use isolation level from statement, default to RepeatableRead if not specified
+	level := stmt.IsolationLevel
+	if level == 0 {
+		level = transaction.RepeatableRead // Default
+	}
+
+	txn, err := e.txnMgr.Begin(level)
 	if err != nil {
 		return nil, fmt.Errorf("failed to begin transaction: %w", err)
 	}
@@ -752,7 +758,7 @@ func (e *Executor) executeBegin(stmt *BeginStmt) (*Result, error) {
 	e.curTxn = txn
 
 	return &Result{
-		Message: "Transaction started",
+		Message: fmt.Sprintf("Transaction started (isolation: %v)", level),
 	}, nil
 }
 
