@@ -24,6 +24,8 @@ make cli
 go run cmd/godb/main.go demo.db
 ```
 
+![CLI Example](assets/cli.png)
+
 ### Basic Example
 
 ```go
